@@ -1,4 +1,4 @@
-# Pterodactyl-Theme-Autoinstaller
+# Pterodactyl-Protect
 
 
 
