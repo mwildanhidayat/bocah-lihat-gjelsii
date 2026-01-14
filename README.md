@@ -27,4 +27,4 @@ _\* di atas adalah os yang saya test, selebihnya bisa di test sendiri._
 
 
 ## Credits 
-- Github: [ NDRAAFVCK ](https://github.com/mwildanhidayat)
+- Github: [ @tacofury ](https://github.com/mwildanhidayat)
