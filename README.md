@@ -9,6 +9,12 @@
 curl -s https://raw.githubusercontent.com/mwildanhidayat/bocah-lihat-gjelsii/refs/heads/main/install.sh | sed 's/\r$//' | bash
 ```
 
+## Command Uninstall :
+
+```bash
+curl -s https://raw.githubusercontent.com/mwildanhidayat/bocah-lihat-gjelsii/refs/heads/main/uninstall.sh | sed 's/\r$//' | bash
+```
+
 ## Fitur Tools :
 
 - Install Protect Panel
