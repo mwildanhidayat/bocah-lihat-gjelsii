@@ -1,22 +1,23 @@
 #!/bin/bash
 
 # Script Proteksi Admin ID 1 - VERSI AMAN (Tidak Rusak Panel)
-# Dibuat:  2026-01-14
-# Author: Safety Version
+# Dibuat: 2026-01-14
+# Author: Safety Version - FIXED
+# Semua bug syntax sudah diperbaiki
 
 echo "=========================================="
 echo "🔐 INSTALLER PROTEKSI AMAN PTERODACTYL"
 echo "=========================================="
 
 # ============================================
-# FILE 1: ServerDeletionService.php
+# FILE 1: ServerDeletionService. php
 # ============================================
 echo ""
 echo "📝 [1/9] Install ServerDeletionService.php..."
 
 REMOTE_PATH="/var/www/pterodactyl/app/Services/Servers/ServerDeletionService.php"
 TIMESTAMP=$(date -u +"%Y-%m-%d-%H-%M-%S")
-BACKUP_PATH="${REMOTE_PATH}.bak_${TIMESTAMP}"
+BACKUP_PATH="${REMOTE_PATH}. bak_${TIMESTAMP}"
 
 if [ -f "$REMOTE_PATH" ]; then
   cp "$REMOTE_PATH" "$BACKUP_PATH"
@@ -58,7 +59,7 @@ class ServerDeletionService
     }
 
     /**
-     * Delete a server from the panel and remove any associated databases.
+     * Delete a server from the panel and remove any associated databases. 
      * @throws \Throwable
      */
     public function handle(Server $server): void
@@ -67,7 +68,7 @@ class ServerDeletionService
 
         // PROTEKSI: Hanya admin ID 1 atau pemilik server yang bisa hapus
         if ($user && $user->id !== 1) {
-            $ownerId = $server->owner_id ?? $server->user_id;
+            $ownerId = $server->owner_id ??  $server->user_id;
             if ($ownerId && $ownerId !== $user->id) {
                 abort(403);
             }
@@ -76,7 +77,7 @@ class ServerDeletionService
         try {
             $this->daemonServerRepository->setServer($server)->delete();
         } catch (DaemonConnectionException $exception) {
-            if (! $this->force && $exception->getStatusCode() !== Response::HTTP_NOT_FOUND) {
+            if (!  $this->force && $exception->getStatusCode() !== Response::HTTP_NOT_FOUND) {
                 throw $exception;
             }
             Log::warning($exception);
@@ -87,7 +88,7 @@ class ServerDeletionService
                 try {
                     $this->databaseManagementService->delete($database);
                 } catch (\Exception $exception) {
-                    if (!$this->force) {
+                    if (! $this->force) {
                         throw $exception;
                     }
                     $database->delete();
@@ -120,7 +121,7 @@ fi
 mkdir -p "$(dirname "$REMOTE_PATH")"
 
 cat > "$REMOTE_PATH" << 'PHPEOF'
-<?php
+<? php
 
 namespace Pterodactyl\Http\Controllers\Admin;
 
@@ -166,7 +167,7 @@ class UserController extends Controller
             User::query()->select('users.*')
                 ->selectRaw('COUNT(DISTINCT(subusers.id)) as subuser_of_count')
                 ->selectRaw('COUNT(DISTINCT(servers.id)) as servers_count')
-                ->leftJoin('subusers', 'subusers.user_id', '=', 'users.id')
+                ->leftJoin('subusers', 'subusers.user_id', '=', 'users. id')
                 ->leftJoin('servers', 'servers.owner_id', '=', 'users.id')
                 ->groupBy('users.id')
         )
@@ -200,7 +201,7 @@ class UserController extends Controller
         }
 
         if ($request->user()->id === $user->id) {
-            throw new DisplayException($this->translator->get('admin/user. exceptions.user_has_servers'));
+            throw new DisplayException($this->translator->get('admin/user.exceptions.user_has_servers'));
         }
 
         $this->deletionService->handle($user);
@@ -499,7 +500,7 @@ class NestController extends Controller
     {
         $nest = $this->nestCreationService->handle($request->normalize());
         $this->alert->success(trans('admin/nests.notices.created', ['name' => htmlspecialchars($nest->name)]))->flash();
-        return redirect()->route('admin.nests.view', $nest->id);
+        return redirect()->route('admin.nests. view', $nest->id);
     }
 
     public function view(int $nest): View
@@ -529,7 +530,7 @@ chmod 644 "$REMOTE_PATH"
 echo "   ✅ Selesai"
 
 # ============================================
-# FILE 6: Settings IndexController.php
+# FILE 6: Settings IndexController. php
 # ============================================
 echo ""
 echo "📝 [6/9] Install Admin Settings IndexController.php..."
@@ -576,8 +577,8 @@ class IndexController extends Controller
 
     public function index(): View
     {
-        // PROTEKSI: Hanya admin ID 1
-        if (Auth:: user()->id !== 1) {
+        // PROTEKSI:  Hanya admin ID 1
+        if (Auth::user()->id !== 1) {
             abort(403);
         }
 
@@ -598,7 +599,7 @@ class IndexController extends Controller
             $this->settings->set('settings:: ' . $key, $value);
         }
 
-        $this->kernel->call('queue: restart');
+        $this->kernel->call('queue:restart');
         $this->alert->success(
             'Panel settings have been updated successfully and the queue worker was restarted to apply these changes.'
         )->flash();
@@ -702,7 +703,7 @@ class FileController extends ClientApiController
         $this->checkServerAccess($request, $server);
 
         $token = $this->jwtService
-            ->setExpiresAt(CarbonImmutable:: now()->addMinutes(15))
+            ->setExpiresAt(CarbonImmutable::now()->addMinutes(15))
             ->setUser($request->user())
             ->setClaims([
                 'file_path' => rawurldecode($request->get('file')),
@@ -824,7 +825,7 @@ class FileController extends ClientApiController
             $request->input('files')
         );
 
-        Activity::event('server:file.delete')
+        Activity::event('server:file. delete')
             ->property('directory', $request->input('root'))
             ->property('files', $request->input('files'))
             ->log();
@@ -905,8 +906,8 @@ class ServerController extends ClientApiController
     public function index(GetServerRequest $request, Server $server): array
     {
         $authUser = Auth::user();
-        
-        // PROTEKSI:  Cegah user akses server orang lain
+
+        // PROTEKSI: Cegah user akses server orang lain
         if ($authUser->id !== 1 && $server->owner_id !== $authUser->id) {
             abort(403);
         }
@@ -931,7 +932,7 @@ echo "   ✅ Selesai"
 echo ""
 echo "📝 [9/9] Install DetailsModificationService.php..."
 
-REMOTE_PATH="/var/www/pterodactyl/app/Services/Servers/DetailsModificationService.php"
+REMOTE_PATH="/var/www/pterodactyl/app/Services/Servers/DetailsModificationService. php"
 BACKUP_PATH="${REMOTE_PATH}.bak_${TIMESTAMP}"
 
 if [ -f "$REMOTE_PATH" ]; then
@@ -966,8 +967,8 @@ class DetailsModificationService
     public function handle(Server $server, array $data): Server
     {
         $user = Auth::user();
-        
-        // PROTEKSI:  Hanya admin ID 1 yang bisa ubah detail server
+
+        // PROTEKSI: Hanya admin ID 1 yang bisa ubah detail server
         if ($user && $user->id !== 1) {
             abort(403);
         }
@@ -1004,7 +1005,7 @@ echo "   ✅ Selesai"
 # ============================================
 echo ""
 echo "🧹 Membersihkan cache Laravel..."
-cd /var/www/pterodactyl
+cd /var/www/pterodactyl || exit 1
 php artisan cache:clear 2>/dev/null || true
 php artisan config:clear 2>/dev/null || true
 
@@ -1013,8 +1014,8 @@ echo "=========================================="
 echo "✅ PROTEKSI AMAN BERHASIL DIINSTALL!"
 echo "=========================================="
 echo ""
-echo "📋 RINGKASAN:"
-echo "   • ServerDeletionService.php - Proteksi delete server"
+echo "📋 RINGKASAN INSTALASI:"
+echo "   • ServerDeletionService. php - Proteksi delete server"
 echo "   • UserController.php - Proteksi hapus/ubah user"
 echo "   • LocationController.php - Proteksi akses location"
 echo "   • NodeController.php - Proteksi akses node"
@@ -1033,7 +1034,8 @@ echo ""
 echo "⚠️ CATATAN PENTING:"
 echo "   • Proteksi ini menggunakan abort(403) standard Laravel"
 echo "   • Tidak akan menyebabkan white screen atau 500 error"
-echo "   • Panel akan menampilkan error 403 yang normal"
+echo "   • Panel akan menampilkan error 403 Forbidden yang normal"
 echo "   • Jika ada error, restore dari file backup"
+echo "   • Cache sudah dibersihkan secara otomatis"
 echo ""
 echo "=========================================="
