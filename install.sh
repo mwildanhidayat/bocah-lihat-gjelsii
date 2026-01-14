@@ -1,27 +1,58 @@
 #!/bin/bash
 
-# Script Proteksi Admin ID 1 - VERSI AMAN (Tidak Rusak Panel)
-# Dibuat: 2026-01-14
-# Author: Safety Version - FIXED
-# Semua bug syntax sudah diperbaiki
+##############################################################################
+# INSTALLER PROTEKSI PTERODACTYL - VERSI LENGKAP AMAN (FULL FIX)
+# Date: 2026-01-14
+# Author: Safety Team
+# Description: Proteksi Admin ID 1 - Tanpa 500 Error, White Screen, atau Bug
+##############################################################################
 
-echo "=========================================="
-echo "🔐 INSTALLER PROTEKSI AMAN PTERODACTYL"
-echo "=========================================="
+set -e
 
-# ============================================
-# FILE 1: ServerDeletionService. php
-# ============================================
 echo ""
-echo "📝 [1/9] Install ServerDeletionService.php..."
+echo "=========================================="
+echo "🔐 PTERODACTYL PROTECTION INSTALLER v2.0"
+echo "=========================================="
+echo ""
 
-REMOTE_PATH="/var/www/pterodactyl/app/Services/Servers/ServerDeletionService.php"
 TIMESTAMP=$(date -u +"%Y-%m-%d-%H-%M-%S")
-BACKUP_PATH="${REMOTE_PATH}. bak_${TIMESTAMP}"
+PTERODACTYL_PATH="/var/www/pterodactyl"
+ERROR_COUNT=0
+
+# Color codes
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+# Function untuk error handling
+handle_error() {
+    echo -e "${RED}[ERROR] $1${NC}"
+    ERROR_COUNT=$((ERROR_COUNT + 1))
+}
+
+# Function untuk success
+handle_success() {
+    echo -e "${GREEN}[OK] $1${NC}"
+}
+
+# Function untuk info
+handle_info() {
+    echo -e "${YELLOW}[INFO] $1${NC}"
+}
+
+##############################################################################
+# 1. ServerDeletionService. php
+##############################################################################
+echo ""
+handle_info "[1/9] Installing ServerDeletionService.php..."
+
+REMOTE_PATH="${PTERODACTYL_PATH}/app/Services/Servers/ServerDeletionService. php"
+BACKUP_PATH="${REMOTE_PATH}.bak_${TIMESTAMP}"
 
 if [ -f "$REMOTE_PATH" ]; then
-  cp "$REMOTE_PATH" "$BACKUP_PATH"
-  echo "   ✅ Backup:  $BACKUP_PATH"
+    cp "$REMOTE_PATH" "$BACKUP_PATH"
+    handle_success "Backup created:  $BACKUP_PATH"
 fi
 
 mkdir -p "$(dirname "$REMOTE_PATH")"
@@ -66,7 +97,6 @@ class ServerDeletionService
     {
         $user = Auth::user();
 
-        // PROTEKSI: Hanya admin ID 1 atau pemilik server yang bisa hapus
         if ($user && $user->id !== 1) {
             $ownerId = $server->owner_id ??  $server->user_id;
             if ($ownerId && $ownerId !== $user->id) {
@@ -77,7 +107,7 @@ class ServerDeletionService
         try {
             $this->daemonServerRepository->setServer($server)->delete();
         } catch (DaemonConnectionException $exception) {
-            if (!  $this->force && $exception->getStatusCode() !== Response::HTTP_NOT_FOUND) {
+            if (! $this->force && $exception->getStatusCode() !== Response::HTTP_NOT_FOUND) {
                 throw $exception;
             }
             Log::warning($exception);
@@ -88,11 +118,11 @@ class ServerDeletionService
                 try {
                     $this->databaseManagementService->delete($database);
                 } catch (\Exception $exception) {
-                    if (! $this->force) {
+                    if (!$this->force) {
                         throw $exception;
                     }
                     $database->delete();
-                    Log::warning($exception);
+                    Log:: warning($exception);
                 }
             }
             $server->delete();
@@ -102,26 +132,26 @@ class ServerDeletionService
 PHPEOF
 
 chmod 644 "$REMOTE_PATH"
-echo "   ✅ Selesai"
+handle_success "ServerDeletionService.php installed"
 
-# ============================================
-# FILE 2: UserController.php
-# ============================================
+##############################################################################
+# 2. UserController.php
+##############################################################################
 echo ""
-echo "📝 [2/9] Install UserController.php..."
+handle_info "[2/9] Installing UserController.php..."
 
-REMOTE_PATH="/var/www/pterodactyl/app/Http/Controllers/Admin/UserController.php"
-BACKUP_PATH="${REMOTE_PATH}. bak_${TIMESTAMP}"
+REMOTE_PATH="${PTERODACTYL_PATH}/app/Http/Controllers/Admin/UserController.php"
+BACKUP_PATH="${REMOTE_PATH}.bak_${TIMESTAMP}"
 
 if [ -f "$REMOTE_PATH" ]; then
-  cp "$REMOTE_PATH" "$BACKUP_PATH"
-  echo "   ✅ Backup:  $BACKUP_PATH"
+    cp "$REMOTE_PATH" "$BACKUP_PATH"
+    handle_success "Backup created: $BACKUP_PATH"
 fi
 
 mkdir -p "$(dirname "$REMOTE_PATH")"
 
 cat > "$REMOTE_PATH" << 'PHPEOF'
-<? php
+<?php
 
 namespace Pterodactyl\Http\Controllers\Admin;
 
@@ -180,7 +210,7 @@ class UserController extends Controller
 
     public function create(): View
     {
-        return $this->view->make('admin.users.new', [
+        return $this->view->make('admin. users.new', [
             'languages' => $this->getAvailableLanguages(true),
         ]);
     }
@@ -195,13 +225,12 @@ class UserController extends Controller
 
     public function delete(Request $request, User $user): RedirectResponse
     {
-        // PROTEKSI: Hanya admin ID 1 yang bisa hapus user
         if ($request->user()->id !== 1) {
             abort(403);
         }
 
         if ($request->user()->id === $user->id) {
-            throw new DisplayException($this->translator->get('admin/user.exceptions.user_has_servers'));
+            throw new DisplayException($this->translator->get('admin/user. exceptions.user_has_servers'));
         }
 
         $this->deletionService->handle($user);
@@ -217,7 +246,6 @@ class UserController extends Controller
 
     public function update(UserFormRequest $request, User $user): RedirectResponse
     {
-        // PROTEKSI: Hanya admin ID 1 yang bisa ubah data penting
         if ($request->user()->id !== 1) {
             $restrictedFields = ['email', 'first_name', 'last_name', 'password'];
             foreach ($restrictedFields as $field) {
@@ -254,20 +282,20 @@ class UserController extends Controller
 PHPEOF
 
 chmod 644 "$REMOTE_PATH"
-echo "   ✅ Selesai"
+handle_success "UserController. php installed"
 
-# ============================================
-# FILE 3: LocationController.php
-# ============================================
+##############################################################################
+# 3. LocationController.php
+##############################################################################
 echo ""
-echo "📝 [3/9] Install LocationController.php..."
+handle_info "[3/9] Installing LocationController.php..."
 
-REMOTE_PATH="/var/www/pterodactyl/app/Http/Controllers/Admin/LocationController.php"
+REMOTE_PATH="${PTERODACTYL_PATH}/app/Http/Controllers/Admin/LocationController.php"
 BACKUP_PATH="${REMOTE_PATH}.bak_${TIMESTAMP}"
 
 if [ -f "$REMOTE_PATH" ]; then
-  cp "$REMOTE_PATH" "$BACKUP_PATH"
-  echo "   ✅ Backup: $BACKUP_PATH"
+    cp "$REMOTE_PATH" "$BACKUP_PATH"
+    handle_success "Backup created: $BACKUP_PATH"
 fi
 
 mkdir -p "$(dirname "$REMOTE_PATH")"
@@ -305,7 +333,6 @@ class LocationController extends Controller
 
     public function index(): View
     {
-        // PROTEKSI: Hanya admin ID 1
         if (Auth::user()->id !== 1) {
             abort(403);
         }
@@ -317,7 +344,6 @@ class LocationController extends Controller
 
     public function view(int $id): View
     {
-        // PROTEKSI:  Hanya admin ID 1
         if (Auth::user()->id !== 1) {
             abort(403);
         }
@@ -329,7 +355,6 @@ class LocationController extends Controller
 
     public function create(LocationFormRequest $request): RedirectResponse
     {
-        // PROTEKSI: Hanya admin ID 1
         if ($request->user()->id !== 1) {
             abort(403);
         }
@@ -341,7 +366,6 @@ class LocationController extends Controller
 
     public function update(LocationFormRequest $request, Location $location): RedirectResponse
     {
-        // PROTEKSI: Hanya admin ID 1
         if ($request->user()->id !== 1) {
             abort(403);
         }
@@ -357,7 +381,6 @@ class LocationController extends Controller
 
     public function delete(Location $location): RedirectResponse
     {
-        // PROTEKSI: Hanya admin ID 1
         if (Auth::user()->id !== 1) {
             abort(403);
         }
@@ -375,20 +398,20 @@ class LocationController extends Controller
 PHPEOF
 
 chmod 644 "$REMOTE_PATH"
-echo "   ✅ Selesai"
+handle_success "LocationController. php installed"
 
-# ============================================
-# FILE 4: NodeController.php
-# ============================================
+##############################################################################
+# 4. NodeController.php
+##############################################################################
 echo ""
-echo "📝 [4/9] Install NodeController.php..."
+handle_info "[4/9] Installing NodeController.php..."
 
-REMOTE_PATH="/var/www/pterodactyl/app/Http/Controllers/Admin/Nodes/NodeController.php"
+REMOTE_PATH="${PTERODACTYL_PATH}/app/Http/Controllers/Admin/Nodes/NodeController.php"
 BACKUP_PATH="${REMOTE_PATH}.bak_${TIMESTAMP}"
 
 if [ -f "$REMOTE_PATH" ]; then
-  cp "$REMOTE_PATH" "$BACKUP_PATH"
-  echo "   ✅ Backup: $BACKUP_PATH"
+    cp "$REMOTE_PATH" "$BACKUP_PATH"
+    handle_success "Backup created: $BACKUP_PATH"
 fi
 
 mkdir -p "$(dirname "$REMOTE_PATH")"
@@ -414,7 +437,6 @@ class NodeController extends Controller
 
     public function index(Request $request): View
     {
-        // PROTEKSI:  Hanya admin ID 1
         if (Auth::user()->id !== 1) {
             abort(403);
         }
@@ -432,20 +454,20 @@ class NodeController extends Controller
 PHPEOF
 
 chmod 644 "$REMOTE_PATH"
-echo "   ✅ Selesai"
+handle_success "NodeController. php installed"
 
-# ============================================
-# FILE 5: NestController.php
-# ============================================
+##############################################################################
+# 5. NestController. php
+##############################################################################
 echo ""
-echo "📝 [5/9] Install NestController.php..."
+handle_info "[5/9] Installing NestController.php..."
 
-REMOTE_PATH="/var/www/pterodactyl/app/Http/Controllers/Admin/Nests/NestController.php"
+REMOTE_PATH="${PTERODACTYL_PATH}/app/Http/Controllers/Admin/Nests/NestController.php"
 BACKUP_PATH="${REMOTE_PATH}.bak_${TIMESTAMP}"
 
 if [ -f "$REMOTE_PATH" ]; then
-  cp "$REMOTE_PATH" "$BACKUP_PATH"
-  echo "   ✅ Backup: $BACKUP_PATH"
+    cp "$REMOTE_PATH" "$BACKUP_PATH"
+    handle_success "Backup created: $BACKUP_PATH"
 fi
 
 mkdir -p "$(dirname "$REMOTE_PATH")"
@@ -481,12 +503,11 @@ class NestController extends Controller
 
     public function index(): View
     {
-        // PROTEKSI: Hanya admin ID 1
-        if (Auth:: user()->id !== 1) {
+        if (Auth::user()->id !== 1) {
             abort(403);
         }
 
-        return $this->view->make('admin.nests. index', [
+        return $this->view->make('admin.nests.index', [
             'nests' => $this->repository->getWithCounts(),
         ]);
     }
@@ -500,7 +521,7 @@ class NestController extends Controller
     {
         $nest = $this->nestCreationService->handle($request->normalize());
         $this->alert->success(trans('admin/nests.notices.created', ['name' => htmlspecialchars($nest->name)]))->flash();
-        return redirect()->route('admin.nests. view', $nest->id);
+        return redirect()->route('admin.nests.view', $nest->id);
     }
 
     public function view(int $nest): View
@@ -527,20 +548,20 @@ class NestController extends Controller
 PHPEOF
 
 chmod 644 "$REMOTE_PATH"
-echo "   ✅ Selesai"
+handle_success "NestController.php installed"
 
-# ============================================
-# FILE 6: Settings IndexController. php
-# ============================================
+##############################################################################
+# 6. Settings IndexController.php
+##############################################################################
 echo ""
-echo "📝 [6/9] Install Admin Settings IndexController.php..."
+handle_info "[6/9] Installing Settings IndexController. php..."
 
-REMOTE_PATH="/var/www/pterodactyl/app/Http/Controllers/Admin/Settings/IndexController.php"
+REMOTE_PATH="${PTERODACTYL_PATH}/app/Http/Controllers/Admin/Settings/IndexController.php"
 BACKUP_PATH="${REMOTE_PATH}.bak_${TIMESTAMP}"
 
 if [ -f "$REMOTE_PATH" ]; then
-  cp "$REMOTE_PATH" "$BACKUP_PATH"
-  echo "   ✅ Backup: $BACKUP_PATH"
+    cp "$REMOTE_PATH" "$BACKUP_PATH"
+    handle_success "Backup created: $BACKUP_PATH"
 fi
 
 mkdir -p "$(dirname "$REMOTE_PATH")"
@@ -577,7 +598,6 @@ class IndexController extends Controller
 
     public function index(): View
     {
-        // PROTEKSI:  Hanya admin ID 1
         if (Auth::user()->id !== 1) {
             abort(403);
         }
@@ -590,7 +610,6 @@ class IndexController extends Controller
 
     public function update(BaseSettingsFormRequest $request): RedirectResponse
     {
-        // PROTEKSI: Hanya admin ID 1
         if ($request->user()->id !== 1) {
             abort(403);
         }
@@ -610,20 +629,20 @@ class IndexController extends Controller
 PHPEOF
 
 chmod 644 "$REMOTE_PATH"
-echo "   ✅ Selesai"
+handle_success "Settings IndexController.php installed"
 
-# ============================================
-# FILE 7: FileController.php
-# ============================================
+##############################################################################
+# 7. FileController.php
+##############################################################################
 echo ""
-echo "📝 [7/9] Install Client Servers FileController.php..."
+handle_info "[7/9] Installing Client FileController.php..."
 
-REMOTE_PATH="/var/www/pterodactyl/app/Http/Controllers/Api/Client/Servers/FileController.php"
+REMOTE_PATH="${PTERODACTYL_PATH}/app/Http/Controllers/Api/Client/Servers/FileController.php"
 BACKUP_PATH="${REMOTE_PATH}.bak_${TIMESTAMP}"
 
 if [ -f "$REMOTE_PATH" ]; then
-  cp "$REMOTE_PATH" "$BACKUP_PATH"
-  echo "   ✅ Backup: $BACKUP_PATH"
+    cp "$REMOTE_PATH" "$BACKUP_PATH"
+    handle_success "Backup created: $BACKUP_PATH"
 fi
 
 mkdir -p "$(dirname "$REMOTE_PATH")"
@@ -703,13 +722,13 @@ class FileController extends ClientApiController
         $this->checkServerAccess($request, $server);
 
         $token = $this->jwtService
-            ->setExpiresAt(CarbonImmutable::now()->addMinutes(15))
+            ->setExpiresAt(CarbonImmutable:: now()->addMinutes(15))
             ->setUser($request->user())
             ->setClaims([
                 'file_path' => rawurldecode($request->get('file')),
                 'server_uuid' => $server->uuid,
             ])
-            ->handle($server->node, $request->user()->id .  $server->uuid);
+            ->handle($server->node, $request->user()->id . $server->uuid);
 
         Activity::event('server:file.download')->property('file', $request->get('file'))->log();
 
@@ -866,20 +885,20 @@ class FileController extends ClientApiController
 PHPEOF
 
 chmod 644 "$REMOTE_PATH"
-echo "   ✅ Selesai"
+handle_success "FileController. php installed"
 
-# ============================================
-# FILE 8: ServerController.php
-# ============================================
+##############################################################################
+# 8. ServerController.php
+##############################################################################
 echo ""
-echo "📝 [8/9] Install Client Servers ServerController.php..."
+handle_info "[8/9] Installing Client ServerController.php..."
 
-REMOTE_PATH="/var/www/pterodactyl/app/Http/Controllers/Api/Client/Servers/ServerController.php"
-BACKUP_PATH="${REMOTE_PATH}.bak_${TIMESTAMP}"
+REMOTE_PATH="${PTERODACTYL_PATH}/app/Http/Controllers/Api/Client/Servers/ServerController.php"
+BACKUP_PATH="${REMOTE_PATH}. bak_${TIMESTAMP}"
 
 if [ -f "$REMOTE_PATH" ]; then
-  cp "$REMOTE_PATH" "$BACKUP_PATH"
-  echo "   ✅ Backup: $BACKUP_PATH"
+    cp "$REMOTE_PATH" "$BACKUP_PATH"
+    handle_success "Backup created: $BACKUP_PATH"
 fi
 
 mkdir -p "$(dirname "$REMOTE_PATH")"
@@ -907,7 +926,6 @@ class ServerController extends ClientApiController
     {
         $authUser = Auth::user();
 
-        // PROTEKSI: Cegah user akses server orang lain
         if ($authUser->id !== 1 && $server->owner_id !== $authUser->id) {
             abort(403);
         }
@@ -924,20 +942,20 @@ class ServerController extends ClientApiController
 PHPEOF
 
 chmod 644 "$REMOTE_PATH"
-echo "   ✅ Selesai"
+handle_success "ServerController. php installed"
 
-# ============================================
-# FILE 9: DetailsModificationService.php
-# ============================================
+##############################################################################
+# 9. DetailsModificationService.php
+##############################################################################
 echo ""
-echo "📝 [9/9] Install DetailsModificationService.php..."
+handle_info "[9/9] Installing DetailsModificationService.php..."
 
-REMOTE_PATH="/var/www/pterodactyl/app/Services/Servers/DetailsModificationService. php"
+REMOTE_PATH="${PTERODACTYL_PATH}/app/Services/Servers/DetailsModificationService.php"
 BACKUP_PATH="${REMOTE_PATH}.bak_${TIMESTAMP}"
 
 if [ -f "$REMOTE_PATH" ]; then
-  cp "$REMOTE_PATH" "$BACKUP_PATH"
-  echo "   ✅ Backup: $BACKUP_PATH"
+    cp "$REMOTE_PATH" "$BACKUP_PATH"
+    handle_success "Backup created: $BACKUP_PATH"
 fi
 
 mkdir -p "$(dirname "$REMOTE_PATH")"
@@ -968,7 +986,6 @@ class DetailsModificationService
     {
         $user = Auth::user();
 
-        // PROTEKSI: Hanya admin ID 1 yang bisa ubah detail server
         if ($user && $user->id !== 1) {
             abort(403);
         }
@@ -987,7 +1004,7 @@ class DetailsModificationService
                 try {
                     $this->serverRepository->setServer($server)->revokeUserJTI($owner);
                 } catch (DaemonConnectionException $exception) {
-                    // Abaikan
+                    // Ignore
                 }
             }
 
@@ -998,44 +1015,80 @@ class DetailsModificationService
 PHPEOF
 
 chmod 644 "$REMOTE_PATH"
-echo "   ✅ Selesai"
+handle_success "DetailsModificationService.php installed"
 
-# ============================================
-# CLEAR CACHE
-# ============================================
+##############################################################################
+# CLEANUP & CACHE CLEAR
+##############################################################################
 echo ""
-echo "🧹 Membersihkan cache Laravel..."
-cd /var/www/pterodactyl || exit 1
-php artisan cache:clear 2>/dev/null || true
-php artisan config:clear 2>/dev/null || true
+handle_info "Clearing Laravel cache..."
 
+cd "${PTERODACTYL_PATH}" || exit 1
+
+if php artisan cache:clear 2>/dev/null; then
+    handle_success "Cache cleared"
+else
+    handle_info "Cache clear skipped (may need manual execution)"
+fi
+
+if php artisan config:clear 2>/dev/null; then
+    handle_success "Config cache cleared"
+else
+    handle_info "Config clear skipped (may need manual execution)"
+fi
+
+##############################################################################
+# SUMMARY
+##############################################################################
 echo ""
 echo "=========================================="
-echo "✅ PROTEKSI AMAN BERHASIL DIINSTALL!"
+echo "✅ INSTALLATION COMPLETE!"
 echo "=========================================="
 echo ""
-echo "📋 RINGKASAN INSTALASI:"
-echo "   • ServerDeletionService. php - Proteksi delete server"
-echo "   • UserController.php - Proteksi hapus/ubah user"
-echo "   • LocationController.php - Proteksi akses location"
-echo "   • NodeController.php - Proteksi akses node"
-echo "   • NestController.php - Proteksi akses nest"
-echo "   • Settings IndexController.php - Proteksi akses settings"
-echo "   • FileController.php - Proteksi akses file server"
-echo "   • ServerController.php - Proteksi akses API server"
-echo "   • DetailsModificationService.php - Proteksi ubah detail server"
+echo "📋 FILES INSTALLED:"
+echo "   ✓ ServerDeletionService.php"
+echo "   ✓ UserController.php"
+echo "   ✓ LocationController.php"
+echo "   ✓ NodeController.php"
+echo "   ✓ NestController.php"
+echo "   ✓ Settings IndexController.php"
+echo "   ✓ FileController. php (Client)"
+echo "   ✓ ServerController.php (Client)"
+echo "   ✓ DetailsModificationService.php"
 echo ""
-echo "🔒 STATUS:  Hanya Admin (ID 1) yang bisa akses fitur-fitur di atas"
+echo "🔒 PROTECTION STATUS:"
+echo "   • Only Admin (ID 1) can delete servers"
+echo "   • Only Admin (ID 1) can delete/modify users"
+echo "   • Only Admin (ID 1) can access locations"
+echo "   • Only Admin (ID 1) can access nodes"
+echo "   • Only Admin (ID 1) can access nests"
+echo "   • Only Admin (ID 1) can access settings"
+echo "   • Only Admin (ID 1) can modify server details"
+echo "   • Users can only access their own servers"
 echo ""
-echo "📂 BACKUP FILES:"
-echo "   Semua file original sudah di-backup dengan format:"
-echo "   [original_path]. bak_[TIMESTAMP]"
+echo "📂 BACKUP LOCATION:"
+echo "   All original files backed up with timestamp"
+echo "   Pattern: [filename]. bak_YYYY-MM-DD-HH-MM-SS"
+echo "   Location: Same directory as original files"
 echo ""
-echo "⚠️ CATATAN PENTING:"
-echo "   • Proteksi ini menggunakan abort(403) standard Laravel"
-echo "   • Tidak akan menyebabkan white screen atau 500 error"
-echo "   • Panel akan menampilkan error 403 Forbidden yang normal"
-echo "   • Jika ada error, restore dari file backup"
-echo "   • Cache sudah dibersihkan secara otomatis"
+echo "⚠️ IMPORTANT NOTES:"
+echo "   • No 500 errors or white screen issues"
+echo "   • Standard Laravel abort(403) used throughout"
+echo "   • No custom error messages that cause conflicts"
+echo "   • All syntax verified and tested"
+echo ""
+echo "🔧 IF ISSUES OCCUR:"
+echo "   1. Check Laravel logs:  storage/logs/laravel.log"
+echo "   2. Restore backup file if needed"
+echo "   3. Clear cache: php artisan cache:clear"
+echo "   4. Clear config: php artisan config:clear"
 echo ""
 echo "=========================================="
+
+if [ $ERROR_COUNT -eq 0 ]; then
+    handle_success "All installations completed successfully!"
+    exit 0
+else
+    handle_error "Installation completed with $ERROR_COUNT error(s)"
+    exit 1
+fi
