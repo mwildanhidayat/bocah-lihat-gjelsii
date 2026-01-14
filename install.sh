@@ -198,7 +198,7 @@ class UserController extends Controller
             User::query()->select('users.*')
                 ->selectRaw('COUNT(DISTINCT(subusers.id)) as subuser_of_count')
                 ->selectRaw('COUNT(DISTINCT(servers.id)) as servers_count')
-                ->leftJoin('subusers', 'subusers.user_id', '=', 'users. id')
+                ->leftJoin('subusers', 'subusers.user_id', '=', 'users.id')
                 ->leftJoin('servers', 'servers.owner_id', '=', 'users.id')
                 ->groupBy('users.id')
         )
@@ -338,7 +338,7 @@ class LocationController extends Controller
             abort(403, '⚠️ ᴀᴋꜱᴇꜱ ᴅɪᴛᴏʟᴀᴋ: ʜᴀɴʏᴀ ᴛᴀᴄᴏ ʏᴀɴɢ ʙɪꜱᴀ ᴀᴋꜱᴇꜱ');
         }
 
-        return $this->view->make('admin. locations.index', [
+        return $this->view->make('admin.locations.index', [
             'locations' => $this->repository->getAllWithDetails(),
         ]);
     }
@@ -418,7 +418,7 @@ fi
 mkdir -p "$(dirname "$REMOTE_PATH")"
 
 cat > "$REMOTE_PATH" << 'PHPEOF'
-<? php
+<?php
 
 namespace Pterodactyl\Http\Controllers\Admin\Nodes;
 
@@ -522,7 +522,7 @@ class NestController extends Controller
     {
         $nest = $this->nestCreationService->handle($request->normalize());
         $this->alert->success(trans('admin/nests.notices.created', ['name' => htmlspecialchars($nest->name)]))->flash();
-        return redirect()->route('admin.nests. view', $nest->id);
+        return redirect()->route('admin.nests.view', $nest->id);
     }
 
     public function view(int $nest): View
@@ -649,7 +649,7 @@ fi
 mkdir -p "$(dirname "$REMOTE_PATH")"
 
 cat > "$REMOTE_PATH" << 'PHPEOF'
-<? php
+<?php
 
 namespace Pterodactyl\Http\Controllers\Api\Client\Servers;
 
