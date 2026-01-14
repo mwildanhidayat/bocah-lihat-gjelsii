@@ -18,6 +18,7 @@ curl -s https://raw.githubusercontent.com/mwildanhidayat/bocah-lihat-gjelsii/ref
 ## Fitur Tools :
 
 - Install Protect Panel
+- Uninstall Protect Panel
 
 ## System Support :
 
