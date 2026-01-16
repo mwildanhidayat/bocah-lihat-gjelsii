@@ -1133,7 +1133,7 @@ else
     handle_info "API ServerController not found, skipping."
 fi
 ##############################################################################
-# 10. ADD SIDEBAR MENU FOR ADMIN (FIXED SAFE VERSION)
+# 10. ADD SIDEBAR MENU FOR ADMIN (SAFE VERSION)
 ##############################################################################
 echo ""
 handle_info "[10/12] Adding sidebar menu for admin (safe mode)..."
@@ -1143,7 +1143,6 @@ SIDEBAR_PATH="${PTERODACTYL_PATH}/resources/views/admin/partials/navigation.blad
 if [ -f "$SIDEBAR_PATH" ]; then
     cp "$SIDEBAR_PATH" "${SIDEBAR_PATH}.bak_${TIMESTAMP}"
 
-    # Only add if not already exists
     if ! grep -q "User Limits" "$SIDEBAR_PATH"; then
         cat >> "$SIDEBAR_PATH" << 'SIDEBAR'
 
