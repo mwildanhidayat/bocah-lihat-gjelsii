@@ -1,62 +1,69 @@
 #!/bin/bash
 
-echo "=========================================="
-echo "🔄 PTERODACTYL PROTECTION RESET (SMART)"
-echo "=========================================="
-echo ""
+PTERO="/var/www/pterodactyl"
+TS=$(date +%Y-%m-%d-%H-%M-%S)
 
-PTERO_PATH="/var/www/pterodactyl"
+echo "====================================="
+echo "🧹 UNINSTALL PTERODACTYL PROTECTION"
+echo "====================================="
 
-if [ ! -d "$PTERO_PATH" ]; then
-  echo "❌ Folder Pterodactyl tidak ditemukan!"
-  exit 1
+# 1. Drop database table
+echo "[1] Dropping user_limits table..."
+mysql -u root -p panel -e "DROP TABLE IF EXISTS user_limits;"
+
+# 2. Remove migration
+echo "[2] Removing migration files..."
+rm -f $PTERO/database/migrations/*create_user_limits_table.php
+
+# 3. Remove model
+echo "[3] Removing UserLimit model..."
+rm -f $PTERO/app/Models/UserLimit.php
+
+# 4. Remove service
+echo "[4] Removing UserLimitService..."
+rm -f $PTERO/app/Services/Users/UserLimitService.php
+
+# 5. Remove middleware
+echo "[5] Removing LimitValidationMiddleware..."
+rm -f $PTERO/app/Http/Middleware/LimitValidationMiddleware.php
+
+# 6. Remove controller
+echo "[6] Removing LimitController..."
+rm -f $PTERO/app/Http/Controllers/Admin/LimitController.php
+
+# 7. Remove request
+echo "[7] Removing UpdateUserLimitRequest..."
+rm -f $PTERO/app/Http/Requests/Admin/UpdateUserLimitRequest.php
+
+# 8. Remove blade UI
+echo "[8] Removing blade UI..."
+rm -rf $PTERO/resources/views/admin/limits
+
+# 9. Restore routes
+if ls $PTERO/routes/admin.php.bak_* 1> /dev/null 2>&1; then
+  echo "[9] Restoring routes..."
+  cp $(ls -t $PTERO/routes/admin.php.bak_* | head -1) $PTERO/routes/admin.php
 fi
 
-cd "$PTERO_PATH" || exit 1
-
-echo "🔍 Mencari file backup (.bak_*)..."
-
-BACKUPS=$(find . -name "*.bak_*")
-
-if [ -z "$BACKUPS" ]; then
-  echo "⚠️ Tidak ada file backup ditemukan."
-  echo "Mungkin proteksi tidak pernah di-install atau backup sudah dihapus."
-  exit 0
+# 10. Restore sidebar
+if ls $PTERO/resources/views/admin/partials/navigation.blade.php.bak_* 1> /dev/null 2>&1; then
+  echo "[10] Restoring sidebar..."
+  cp $(ls -t $PTERO/resources/views/admin/partials/navigation.blade.php.bak_* | head -1) \
+     $PTERO/resources/views/admin/partials/navigation.blade.php
 fi
 
-echo "♻️ Mengembalikan file ke versi asli..."
+# 11. Restore Kernel
+if ls $PTERO/app/Http/Kernel.php.bak_* 1> /dev/null 2>&1; then
+  echo "[11] Restoring Kernel..."
+  cp $(ls -t $PTERO/app/Http/Kernel.php.bak_* | head -1) \
+     $PTERO/app/Http/Kernel.php
+fi
 
-for f in $BACKUPS; do
-  ORIGINAL=$(echo "$f" | sed 's/\.bak_.*//')
-  mv "$f" "$ORIGINAL"
-  echo "✅ Restored: $ORIGINAL"
-done
-
-echo ""
-echo "🧹 Membersihkan cache Laravel..."
-
+# 12. Clear cache
+echo "[12] Clearing cache..."
+cd $PTERO || exit
 php artisan optimize:clear
-php artisan view:clear
-php artisan config:clear
-php artisan route:clear
 
-echo ""
-echo "🔎 Mendeteksi PHP-FPM..."
-
-PHP_FPM=$(systemctl list-units --type=service --no-pager | grep -oE "php[0-9.]+-fpm" | head -n 1)
-
-if [ -z "$PHP_FPM" ]; then
-  echo "⚠️ PHP-FPM tidak ditemukan. Restart manual mungkin diperlukan."
-else
-  echo "🔁 Restarting $PHP_FPM ..."
-  systemctl restart "$PHP_FPM"
-fi
-
-echo "🔁 Restarting Nginx..."
-systemctl restart nginx
-
-echo ""
-echo "=========================================="
-echo "✅ RESET SELESAI"
-echo "Panel kembali ke kondisi NORMAL"
-echo "=========================================="
+echo "====================================="
+echo "✅ UNINSTALL COMPLETE"
+echo "====================================="

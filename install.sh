@@ -52,9 +52,8 @@ MIGRATION_PATH="${PTERODACTYL_PATH}/database/migrations"
 mkdir -p "$MIGRATION_PATH"
 
 # Pakai nama tetap, bukan timestamp
-MIGRATION_FILE="${MIGRATION_PATH}/2026_01_17_000000_create_user_limits_table.php"
+MIGRATION_FILE="${PTERODACTYL_PATH}/database/migrations/2026_01_17_000000_create_user_limits_table.php"
 
-# Jangan buat ulang kalau sudah ada
 if [ -f "$MIGRATION_FILE" ]; then
     handle_info "Migration already exists, skipping creation"
 else
@@ -74,15 +73,14 @@ return new class extends Migration
             Schema::create('user_limits', function (Blueprint $table) {
                 $table->id();
                 $table->unsignedBigInteger('user_id')->unique();
-                $table->integer('max_ram')->default(0)->comment('Maximum RAM in MB');
-                $table->integer('max_disk')->default(0)->comment('Maximum Disk in MB');
-                $table->integer('max_cpu')->default(0)->comment('Maximum CPU in %');
-                $table->integer('max_servers')->default(0)->comment('Maximum servers count');
+                $table->integer('max_ram')->default(0);
+                $table->integer('max_disk')->default(0);
+                $table->integer('max_cpu')->default(0);
+                $table->integer('max_servers')->default(0);
                 $table->timestamps();
             });
         }
 
-        // Insert default limit for admin (unlimited) if not exists
         if (!DB::table('user_limits')->where('user_id', 1)->exists()) {
             DB::table('user_limits')->insert([
                 'user_id' => 1,
@@ -102,8 +100,6 @@ return new class extends Migration
     }
 };
 PHPEOF
-
-    handle_success "Migration created: $(basename $MIGRATION_FILE)"
 fi
 ##############################################################################
 # 1. CREATE USER LIMIT MODEL
@@ -1152,23 +1148,19 @@ if [ -f "$SIDEBAR_PATH" ]; then
     cp "$SIDEBAR_PATH" "${SIDEBAR_PATH}.bak_${TIMESTAMP}"
 
     if ! grep -q "User Limits" "$SIDEBAR_PATH"; then
-        cat >> "$SIDEBAR_PATH" << 'SIDEBAR'
+        sed -i "/<li class=.*Users.*/a \
+<li class=\"{{ Request::is('*admin/limits*') ? 'active' : '' }}\">\
+<a href=\"{{ route('admin.limits') }}\">\
+<i class=\"fa fa-sliders\"></i> User Limits\
+</a>\
+</li>" "$SIDEBAR_PATH"
 
-{{-- User Limits Menu --}}
-<li class="{{ Request::is('*admin/limits*') ? 'active' : '' }}">
-    <a href="{{ route('admin.limits') }}">
-        <i class="fa fa-sliders"></i> User Limits
-    </a>
-</li>
-
-SIDEBAR
-
-        handle_success "Sidebar menu added safely"
+        handle_success "Sidebar menu added under Users"
     else
         handle_info "Sidebar menu already exists, skipping"
     fi
 else
-    handle_info "Sidebar file not found, skipping menu addition"
+    handle_error "Sidebar file not found"
 fi
 ##############################################################################
 # 11. CREATE MIDDLEWARE FOR LIMIT VALIDATION
@@ -1284,13 +1276,9 @@ cd "${PTERODACTYL_PATH}" || exit 1
 
 # Cek apakah migration user_limits sudah pernah dijalankan
 if php artisan migrate:status | grep -q create_user_limits_table; then
-    handle_info "user_limits migration already applied, skipping"
+    echo "[INFO] user_limits migration already applied, skipping"
 else
-    if php artisan migrate --path="$MIGRATION_FILE" --force; then
-        handle_success "user_limits migration completed"
-    else
-        handle_error "Migration failed. Please run manually: php artisan migrate --path=$MIGRATION_FILE --force"
-    fi
+    php artisan migrate --path="$MIGRATION_FILE" --force
 fi
 ##############################################################################
 # CLEANUP & CACHE CLEAR
