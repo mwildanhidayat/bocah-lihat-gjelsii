@@ -1133,23 +1133,36 @@ else
     handle_info "API ServerController not found, skipping."
 fi
 ##############################################################################
-# 10. ADD SIDEBAR MENU FOR ADMIN
+# 10. ADD SIDEBAR MENU FOR ADMIN (FIXED SAFE VERSION)
 ##############################################################################
 echo ""
-handle_info "[10/12] Adding sidebar menu for admin..."
+handle_info "[10/12] Adding sidebar menu for admin (safe mode)..."
 
 SIDEBAR_PATH="${PTERODACTYL_PATH}/resources/views/admin/partials/navigation.blade.php"
+
 if [ -f "$SIDEBAR_PATH" ]; then
     cp "$SIDEBAR_PATH" "${SIDEBAR_PATH}.bak_${TIMESTAMP}"
-    
-    # Add limit management menu after Users menu
-    sed -i '/<i class="fa fa-users"><\/i> Users/a \ \ \ \ \ \ \ \ \ \ \ \ <li class="{{ Request::is(\'*admin/limits*\') ? \'active\' : \'\' }}">\n\ \ \ \ \ \ \ \ \ \ \ \ \ \ <a href="{{ route(\'admin.limits\') }}">\n\ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ <i class="fa fa-sliders"></i> User Limits\n\ \ \ \ \ \ \ \ \ \ \ \ \ \ </a>\n\ \ \ \ \ \ \ \ \ \ \ \ </li>' "$SIDEBAR_PATH"
-    
-    handle_success "Sidebar menu added"
+
+    # Only add if not already exists
+    if ! grep -q "User Limits" "$SIDEBAR_PATH"; then
+        cat >> "$SIDEBAR_PATH" << 'SIDEBAR'
+
+{{-- User Limits Menu --}}
+<li class="{{ Request::is('*admin/limits*') ? 'active' : '' }}">
+    <a href="{{ route('admin.limits') }}">
+        <i class="fa fa-sliders"></i> User Limits
+    </a>
+</li>
+
+SIDEBAR
+
+        handle_success "Sidebar menu added safely"
+    else
+        handle_info "Sidebar menu already exists, skipping"
+    fi
 else
     handle_info "Sidebar file not found, skipping menu addition"
 fi
-
 ##############################################################################
 # 11. CREATE MIDDLEWARE FOR LIMIT VALIDATION
 ##############################################################################
