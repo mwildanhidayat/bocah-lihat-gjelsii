@@ -298,37 +298,42 @@ chmod 644 "$SERVICE_PATH"
 handle_success "UserLimitService created"
 
 ##############################################################################
-# 3. MODIFY SERVER CREATION SERVICE (VALIDATION)
+# 3. CREATE OVERRIDE FILE INSTEAD OF MODIFYING ORIGINAL
 ##############################################################################
 echo ""
-handle_info "[3/12] Modifying ServerCreationService for limits..."
+handle_info "[3/12] Creating ServerCreationService override..."
 
-CREATION_SERVICE_PATH="${PTERODACTYL_PATH}/app/Services/Servers/ServerCreationService.php"
-BACKUP_PATH="${CREATION_SERVICE_PATH}.bak_${TIMESTAMP}"
+OVERRIDE_PATH="${PTERODACTYL_PATH}/app/Services/Servers/ServerCreationServiceOverride.php"
 
-if [ -f "$CREATION_SERVICE_PATH" ]; then
-    cp "$CREATION_SERVICE_PATH" "$BACKUP_PATH"
-    handle_success "Backup created: $BACKUP_PATH"
-    
-    # Inject limit check into existing file
-    sed -i '/use Pterodactyl\\Models\\Server;/a use Pterodactyl\\Services\\Users\\UserLimitService;' "$CREATION_SERVICE_PATH"
-    sed -i '/__construct(/a\ \ \ \ \ \ \ \ private UserLimitService \$limitService,' "$CREATION_SERVICE_PATH"
-    
-    # Find where validation occurs and add limit check
-    sed -i '/Validate the data and ensure no errors are present/ {
-        n
-        a \ \ \ \ \ \ \ \ \ \ \ \ // Check user limits
-        a \ \ \ \ \ \ \ \ \ \ \ \ if ($data[\'owner_id\'] !== 1) {
-        a \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ $user = User::findOrFail($data[\'owner_id\']);
-        a \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ $this->limitService->checkCreateServerLimits($user, $data[\'memory\'], $data[\'disk\'], $data[\'cpu\']);
-        a \ \ \ \ \ \ \ \ \ \ \ \ }
-    }' "$CREATION_SERVICE_PATH"
-    
-    handle_success "ServerCreationService modified for limit validation"
-else
-    handle_info "ServerCreationService.php not found, skipping modification"
-fi
+cat > "$OVERRIDE_PATH" << 'PHPEOF'
+<?php
 
+namespace Pterodactyl\Services\Servers;
+
+use Pterodactyl\Models\User;
+use Illuminate\Support\Facades\App;
+use Pterodactyl\Services\Users\UserLimitService;
+
+class ServerCreationServiceOverride
+{
+    public static function validateUserLimits($data)
+    {
+        if ($data['owner_id'] !== 1) {
+            $user = User::findOrFail($data['owner_id']);
+            $limitService = App::make(UserLimitService::class);
+            $limitService->checkCreateServerLimits(
+                $user, 
+                $data['memory'], 
+                $data['disk'], 
+                $data['cpu']
+            );
+        }
+    }
+}
+PHPEOF
+
+chmod 644 "$OVERRIDE_PATH"
+handle_success "ServerCreationService override created"
 ##############################################################################
 # 4. CREATE ADMIN LIMIT CONTROLLER
 ##############################################################################
