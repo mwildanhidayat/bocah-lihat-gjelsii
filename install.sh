@@ -597,7 +597,7 @@ REMOTE_PATH="${PTERODACTYL_PATH}/app/Http/Controllers/Admin/Servers/ServerContro
 BACKUP_PATH="${REMOTE_PATH}.bak_${TIMESTAMP}"
 
 if [ -f "$REMOTE_PATH" ]; then
-    cp "$REMOTE_PATH" "$BACKUP_BACKUP"
+    cp "$REMOTE_PATH" "$BACKUP_PATH"
     handle_success "Backup created: $BACKUP_PATH"
 fi
 
