@@ -1,11 +1,9 @@
 #!/bin/bash
 
 ##############################################################################
-# INSTALLER PROTEKSI PTERODACTYL - VERSI 3.0 DENGAN LIMIT & UI ADMIN
+# PTERODACTYL PROTECTION INSTALLER v3.0 - SERVER CREATION LIMITS
 # Date: 2026-01-17
-# Author: Safety Team
-# Description: Proteksi Admin ID 1 + Limit User + UI Admin
-# Fitur: Limit RAM/Disk/CPU ≠ 0 + Custom 403 Page + UI Admin
+# Features: User Limits, Admin-Only UI, Custom 403 Page, API Protection
 ##############################################################################
 
 set -e
@@ -16,7 +14,7 @@ echo "🔐 PTERODACTYL PROTECTION INSTALLER v3.0"
 echo "=========================================="
 echo ""
 
-TIMESTAMP=$(date -u +"%Y-%m-%d-%H-%M-%S")
+TIMESTAMP=$(date -u +"%Y%m%d_%H%M%S")
 PTERODACTYL_PATH="/var/www/pterodactyl"
 ERROR_COUNT=0
 
@@ -24,1354 +22,714 @@ ERROR_COUNT=0
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
 NC='\033[0m'
 
-# Function untuk error handling
-handle_error() {
-    echo -e "${RED}[ERROR] $1${NC}"
-    ERROR_COUNT=$((ERROR_COUNT + 1))
-}
-
-# Function untuk success
-handle_success() {
-    echo -e "${GREEN}[OK] $1${NC}"
-}
-
-# Function untuk info
-handle_info() {
-    echo -e "${YELLOW}[INFO] $1${NC}"
-}
+# Functions
+handle_error() { echo -e "${RED}[ERROR] $1${NC}"; ERROR_COUNT=$((ERROR_COUNT + 1)); }
+handle_success() { echo -e "${GREEN}[OK] $1${NC}"; }
+handle_info() { echo -e "${YELLOW}[INFO] $1${NC}"; }
+handle_title() { echo -e "${BLUE}[INSTALL] $1${NC}"; }
 
 ##############################################################################
-# 0. CREATE LIMIT DATABASE MIGRATION (SAFE & IDEMPOTENT)
+# 1. PROTECTION SERVICE (Core Logic)
 ##############################################################################
-echo ""
-handle_info "[0/12] Creating user_limits table migration..."
+handle_title "Installing ProtectionService.php..."
+REMOTE_PATH="${PTERODACTYL_PATH}/app/Services/Protection/ProtectionService.php"
+mkdir -p "$(dirname "$REMOTE_PATH")"
 
-MIGRATION_PATH="${PTERODACTYL_PATH}/database/migrations"
-mkdir -p "$MIGRATION_PATH"
-
-# Pakai nama tetap, bukan timestamp
-MIGRATION_FILE="${PTERODACTYL_PATH}/database/migrations/2026_01_17_000000_create_user_limits_table.php"
-
-if [ -f "$MIGRATION_FILE" ]; then
-    handle_info "Migration already exists, skipping creation"
-else
-    cat > "$MIGRATION_FILE" << 'PHPEOF'
+cat > "$REMOTE_PATH" << 'PHPEOF'
 <?php
 
-use Illuminate\Database\Migrations\Migration;
-use Illuminate\Database\Schema\Blueprint;
-use Illuminate\Support\Facades\Schema;
-use Illuminate\Support\Facades\DB;
+namespace Pterodactyl\Services\Protection;
 
-return new class extends Migration
+use Illuminate\Support\Facades\Auth;
+use Pterodactyl\Contracts\Repository\SettingsRepositoryInterface;
+
+class ProtectionService
 {
-    public function up(): void
-    {
-        if (!Schema::hasTable('user_limits')) {
-            Schema::create('user_limits', function (Blueprint $table) {
-                $table->id();
-                $table->unsignedBigInteger('user_id')->unique();
-                $table->integer('max_ram')->default(0);
-                $table->integer('max_disk')->default(0);
-                $table->integer('max_cpu')->default(0);
-                $table->integer('max_servers')->default(0);
-                $table->timestamps();
-            });
-        }
+    public function __construct(
+        private SettingsRepositoryInterface $settings
+    ) {}
 
-        if (!DB::table('user_limits')->where('user_id', 1)->exists()) {
-            DB::table('user_limits')->insert([
-                'user_id' => 1,
-                'max_ram' => 0,
-                'max_disk' => 0,
-                'max_cpu' => 0,
-                'max_servers' => 0,
-                'created_at' => now(),
-                'updated_at' => now(),
-            ]);
-        }
+    public function getCustom403Message(): string
+    {
+        return $this->settings->get('proteksi::403_message', '⚠️ Access Denied: Only Main Administrator can access this resource.');
     }
 
-    public function down(): void
+    public function getProtectedUserId(): int
     {
-        Schema::dropIfExists('user_limits');
-    }
-};
-PHPEOF
-fi
-##############################################################################
-# 1. CREATE USER LIMIT MODEL
-##############################################################################
-echo ""
-handle_info "[1/12] Creating UserLimit model..."
-
-MODEL_PATH="${PTERODACTYL_PATH}/app/Models/UserLimit.php"
-mkdir -p "$(dirname "$MODEL_PATH")"
-
-cat > "$MODEL_PATH" << 'PHPEOF'
-<?php
-
-namespace Pterodactyl\Models;
-
-use Illuminate\Database\Eloquent\Model;
-
-class UserLimit extends Model
-{
-    protected $table = 'user_limits';
-
-    protected $fillable = [
-        'user_id',
-        'max_ram',
-        'max_disk',
-        'max_cpu',
-        'max_servers',
-    ];
-
-    protected $casts = [
-        'max_ram' => 'integer',
-        'max_disk' => 'integer',
-        'max_cpu' => 'integer',
-        'max_servers' => 'integer',
-    ];
-
-    public function user()
-    {
-        return $this->belongsTo(User::class);
+        return (int)$this->settings->get('proteksi::protected_user_id', 1);
     }
 
-    public static function getLimit($userId)
+    public function getMinLimits(): array
     {
-        return self::firstOrCreate(
-            ['user_id' => $userId],
-            [
-                'max_ram' => 1024,
-                'max_disk' => 10240,
-                'max_cpu' => 100,
-                'max_servers' => 1,
-            ]
-        );
+        return [
+            'ram' => (int)$this->settings->get('proteksi::min_ram', 1),
+            'disk' => (int)$this->settings->get('proteksi::min_disk', 1),
+            'cpu' => (int)$this->settings->get('proteksi::min_cpu', 1),
+        ];
     }
 
-    public function isUnlimited($field = null)
+    public function isAdmin(): bool
     {
-        if ($field) {
-            return $this->$field === 0;
-        }
-        return $this->max_ram === 0 && $this->max_disk === 0 && $this->max_cpu === 0 && $this->max_servers === 0;
+        $user = Auth::user();
+        return $user && $user->id === $this->getProtectedUserId();
     }
 
-    public function checkLimit($ram, $disk, $cpu, $currentServers = 0)
+    public function validateServerLimits(array $data): void
     {
-        $errors = [];
-
-        if (!$this->isUnlimited('max_ram') && $ram > $this->max_ram) {
-            $errors[] = "RAM melebihi batas. Maksimal: {$this->max_ram} MB";
+        if ($this->isAdmin()) {
+            return;
         }
 
-        if (!$this->isUnlimited('max_disk') && $disk > $this->max_disk) {
-            $errors[] = "Disk melebihi batas. Maksimal: {$this->max_disk} MB";
-        }
-
-        if (!$this->isUnlimited('max_cpu') && $cpu > $this->max_cpu) {
-            $errors[] = "CPU melebihi batas. Maksimal: {$this->max_cpu}%";
-        }
-
-        if (!$this->isUnlimited('max_servers') && $currentServers >= $this->max_servers) {
-            $errors[] = "Jumlah server melebihi batas. Maksimal: {$this->max_servers} server";
-        }
-
-        return $errors;
-    }
-}
-PHPEOF
-
-chmod 644 "$MODEL_PATH"
-handle_success "UserLimit model created"
-
-##############################################################################
-# 2. CREATE USER LIMIT SERVICE
-##############################################################################
-echo ""
-handle_info "[2/12] Creating UserLimitService..."
-
-SERVICE_PATH="${PTERODACTYL_PATH}/app/Services/Users/UserLimitService.php"
-mkdir -p "$(dirname "$SERVICE_PATH")"
-
-cat > "$SERVICE_PATH" << 'PHPEOF'
-<?php
-
-namespace Pterodactyl\Services\Users;
-
-use Pterodactyl\Models\User;
-use Pterodactyl\Models\UserLimit;
-use Illuminate\Support\Facades\DB;
-use Pterodactyl\Exceptions\DisplayException;
-
-class UserLimitService
-{
-    public function checkCreateServerLimits(User $user, $ram, $disk, $cpu)
-    {
-        if ($user->id === 1) {
-            return; // Admin tidak dibatasi
-        }
-
-        // Dapatkan limit user
-        $limit = UserLimit::getLimit($user->id);
-
-        // Hitung server saat ini
-        $currentServers = $user->servers()->count();
-
-        // Check limits
-        $errors = $limit->checkLimit($ram, $disk, $cpu, $currentServers);
-
-        if (!empty($errors)) {
-            throw new DisplayException(
-                'Batas pembuatan server terlampaui: ' . implode(', ', $errors)
+        $limits = $this->getMinLimits();
+        
+        if (($data['memory'] ?? 0) < $limits['ram']) {
+            throw new \Pterodactyl\Exceptions\DisplayException(
+                "Memory allocation must be at least {$limits['ram']} MB. Zero or negative values are not allowed."
             );
         }
-
-        // Pastikan RAM, Disk, CPU tidak 0
-        if ($ram <= 0) {
-            throw new DisplayException('RAM tidak boleh 0 atau negatif');
+        
+        if (($data['disk'] ?? 0) < $limits['disk']) {
+            throw new \Pterodactyl\Exceptions\DisplayException(
+                "Disk space must be at least {$limits['disk']} MB. Zero or negative values are not allowed."
+            );
         }
-
-        if ($disk <= 0) {
-            throw new DisplayException('Disk tidak boleh 0 atau negatif');
-        }
-
-        if ($cpu <= 0) {
-            throw new DisplayException('CPU tidak boleh 0 atau negatif');
-        }
-    }
-
-    public function updateLimits($userId, $data)
-    {
-        if ($userId === 1) {
-            throw new DisplayException('Tidak dapat mengubah limit untuk Admin ID 1');
-        }
-
-        return DB::transaction(function () use ($userId, $data) {
-            $limit = UserLimit::firstOrNew(['user_id' => $userId]);
-            
-            // Validasi input
-            $ram = (int)($data['max_ram'] ?? 0);
-            $disk = (int)($data['max_disk'] ?? 0);
-            $cpu = (int)($data['max_cpu'] ?? 0);
-            $servers = (int)($data['max_servers'] ?? 0);
-
-            if ($ram < 0 || $disk < 0 || $cpu < 0 || $servers < 0) {
-                throw new DisplayException('Nilai limit tidak boleh negatif');
-            }
-
-            $limit->max_ram = $ram;
-            $limit->max_disk = $disk;
-            $limit->max_cpu = $cpu;
-            $limit->max_servers = $servers;
-            $limit->save();
-
-            return $limit;
-        });
-    }
-
-    public function getLimits($userId)
-    {
-        return UserLimit::getLimit($userId);
-    }
-
-    public function resetToDefaults($userId)
-    {
-        if ($userId === 1) {
-            throw new DisplayException('Tidak dapat mereset limit untuk Admin ID 1');
-        }
-
-        $limit = UserLimit::getLimit($userId);
-        $limit->max_ram = 1024;
-        $limit->max_disk = 10240;
-        $limit->max_cpu = 100;
-        $limit->max_servers = 1;
-        $limit->save();
-
-        return $limit;
-    }
-}
-PHPEOF
-
-chmod 644 "$SERVICE_PATH"
-handle_success "UserLimitService created"
-
-##############################################################################
-# 3. CREATE OVERRIDE FILE INSTEAD OF MODIFYING ORIGINAL
-##############################################################################
-echo ""
-handle_info "[3/12] Creating ServerCreationService override..."
-
-OVERRIDE_PATH="${PTERODACTYL_PATH}/app/Services/Servers/ServerCreationServiceOverride.php"
-
-cat > "$OVERRIDE_PATH" << 'PHPEOF'
-<?php
-
-namespace Pterodactyl\Services\Servers;
-
-use Pterodactyl\Models\User;
-use Illuminate\Support\Facades\App;
-use Pterodactyl\Services\Users\UserLimitService;
-
-class ServerCreationServiceOverride
-{
-    public static function validateUserLimits($data)
-    {
-        if ($data['owner_id'] !== 1) {
-            $user = User::findOrFail($data['owner_id']);
-            $limitService = App::make(UserLimitService::class);
-            $limitService->checkCreateServerLimits(
-                $user, 
-                $data['memory'], 
-                $data['disk'], 
-                $data['cpu']
+        
+        if (($data['cpu'] ?? 0) < $limits['cpu']) {
+            throw new \Pterodactyl\Exceptions\DisplayException(
+                "CPU limit must be at least {$limits['cpu']}%. Zero or negative values are not allowed."
             );
         }
     }
 }
 PHPEOF
+chmod 644 "$REMOTE_PATH"
+handle_success "ProtectionService.php installed"
 
-chmod 644 "$OVERRIDE_PATH"
-handle_success "ServerCreationService override created"
 ##############################################################################
-# 4. CREATE ADMIN LIMIT CONTROLLER
+# 2. PROTECTION CONTROLLER (Admin UI)
 ##############################################################################
-echo ""
-handle_info "[4/12] Creating Admin LimitController..."
+handle_title "Installing ProtectionController.php..."
+REMOTE_PATH="${PTERODACTYL_PATH}/app/Http/Controllers/Admin/ProtectionController.php"
 
-LIMIT_CONTROLLER_PATH="${PTERODACTYL_PATH}/app/Http/Controllers/Admin/LimitController.php"
-mkdir -p "$(dirname "$LIMIT_CONTROLLER_PATH")"
-
-cat > "$LIMIT_CONTROLLER_PATH" << 'PHPEOF'
+cat > "$REMOTE_PATH" << 'PHPEOF'
 <?php
 
 namespace Pterodactyl\Http\Controllers\Admin;
 
 use Illuminate\View\View;
 use Illuminate\Http\Request;
-use Pterodactyl\Models\User;
-use Pterodactyl\Models\UserLimit;
-use Illuminate\Http\JsonResponse;
-use Illuminate\Http\RedirectResponse;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Http\RedirectResponse;
 use Prologue\Alerts\AlertsMessageBag;
-use Pterodactyl\Exceptions\DisplayException;
+use Illuminate\View\Factory as ViewFactory;
 use Pterodactyl\Http\Controllers\Controller;
-use Pterodactyl\Services\Users\UserLimitService;
-use Pterodactyl\Http\Requests\Admin\UpdateUserLimitRequest;
+use Pterodactyl\Services\Protection\ProtectionService;
+use Pterodactyl\Contracts\Repository\SettingsRepositoryInterface;
 
-class LimitController extends Controller
+class ProtectionController extends Controller
 {
     public function __construct(
         private AlertsMessageBag $alert,
-        private UserLimitService $limitService
+        private SettingsRepositoryInterface $settings,
+        private ProtectionService $protectionService,
+        private ViewFactory $view
     ) {}
 
-    public function index(Request $request): View
+    public function index(): View
     {
-        // Only admin ID 1 can access
-        if ($request->user()->id !== 1) {
-            abort(403, '⚠️ ᴀᴋꜱᴇꜱ ᴅɪᴛᴏʟᴀᴋ: ʜᴀɴʏᴀ ᴀᴅᴍɪɴ ᴜᴛᴀᴍᴀ ʏᴀɴɢ ʙɪꜱᴀ ᴀᴋꜱᴇꜱ');
+        if (Auth::user()->id !== 1) {
+            abort(403, $this->protectionService->getCustom403Message());
         }
 
-        $users = User::where('id', '!=', 1)
-            ->with('limit')
-            ->paginate(20);
-
-        return view('admin.limits.index', compact('users'));
+        return $this->view->make('admin.protection.index', [
+            'protected_user_id' => $this->protectionService->getProtectedUserId(),
+            'custom_403_message' => $this->protectionService->getCustom403Message(),
+            'min_limits' => $this->protectionService->getMinLimits(),
+        ]);
     }
 
-    public function view(Request $request, User $user): View
+    public function update(Request $request): RedirectResponse
     {
-        if ($request->user()->id !== 1) {
-            abort(403, '⚠️ ᴀᴋꜱᴇꜱ ᴅɪᴛᴏʟᴀᴋ: ʜᴀɴʏᴀ ᴀᴅᴍɪɴ ᴜᴛᴀᴍᴀ ʏᴀɴɢ ʙɪꜱᴀ ᴀᴋꜱᴇꜱ');
+        if (Auth::user()->id !== 1) {
+            abort(403, $this->protectionService->getCustom403Message());
         }
 
-        if ($user->id === 1) {
-            $this->alert->warning('Admin utama memiliki akses tak terbatas.')->flash();
-            return redirect()->route('admin.limits');
-        }
+        $request->validate([
+            'protected_user_id' => 'required|integer|min:1',
+            'custom_403_message' => 'required|string|max:255',
+            'min_ram' => 'required|integer|min:1',
+            'min_disk' => 'required|integer|min:1',
+            'min_cpu' => 'required|integer|min:1',
+        ]);
 
-        $limit = $this->limitService->getLimits($user->id);
-        return view('admin.limits.view', compact('user', 'limit'));
-    }
+        $this->settings->set('proteksi::protected_user_id', $request->input('protected_user_id'));
+        $this->settings->set('proteksi::403_message', $request->input('custom_403_message'));
+        $this->settings->set('proteksi::min_ram', $request->input('min_ram'));
+        $this->settings->set('proteksi::min_disk', $request->input('min_disk'));
+        $this->settings->set('proteksi::min_cpu', $request->input('min_cpu'));
 
-    public function update(UpdateUserLimitRequest $request, User $user): RedirectResponse
-    {
-        if ($request->user()->id !== 1) {
-            abort(403, '⚠️ ᴀᴋꜱᴇꜱ ᴅɪᴛᴏʟᴀᴋ: ʜᴀɴʏᴀ ᴀᴅᴍɪɴ ᴜᴛᴀᴍᴀ ʏᴀɴɢ ʙɪꜱᴀ ᴀᴋꜱᴇꜱ');
-        }
-
-        try {
-            $this->limitService->updateLimits($user->id, $request->validated());
-            $this->alert->success('Limit pengguna berhasil diperbarui.')->flash();
-        } catch (DisplayException $e) {
-            $this->alert->danger($e->getMessage())->flash();
-        }
-
-        return redirect()->route('admin.limits.view', $user->id);
-    }
-
-    public function reset(Request $request, User $user): RedirectResponse
-    {
-        if ($request->user()->id !== 1) {
-            abort(403, '⚠️ ᴀᴋꜱᴇꜱ ᴅɪᴛᴏʟᴀᴋ: ʜᴀɴʏᴀ ᴀᴅᴍɪɴ ᴜᴛᴀᴍᴀ ʏᴀɴɢ ʙɪꜱᴀ ᴀᴋꜱᴇꜱ');
-        }
-
-        try {
-            $this->limitService->resetToDefaults($user->id);
-            $this->alert->success('Limit berhasil direset ke nilai default.')->flash();
-        } catch (DisplayException $e) {
-            $this->alert->danger($e->getMessage())->flash();
-        }
-
-        return redirect()->route('admin.limits.view', $user->id);
-    }
-
-    public function getLimitsApi(Request $request, User $user): JsonResponse
-    {
-        if ($request->user()->id !== 1) {
-            return response()->json(['error' => 'Unauthorized'], 403);
-        }
-
-        $limit = $this->limitService->getLimits($user->id);
-        return response()->json($limit);
-    }
-
-    public function checkUserLimit(Request $request): JsonResponse
-    {
-        $userId = $request->input('user_id');
-        $ram = (int)$request->input('ram');
-        $disk = (int)$request->input('disk');
-        $cpu = (int)$request->input('cpu');
-
-        if ($userId === 1) {
-            return response()->json(['allowed' => true]);
-        }
-
-        try {
-            $user = User::findOrFail($userId);
-            $this->limitService->checkCreateServerLimits($user, $ram, $disk, $cpu);
-            return response()->json(['allowed' => true]);
-        } catch (DisplayException $e) {
-            return response()->json([
-                'allowed' => false,
-                'message' => $e->getMessage()
-            ], 400);
-        }
+        $this->alert->success('Protection settings updated successfully.')->flash();
+        return redirect()->route('admin.protection');
     }
 }
 PHPEOF
-
-chmod 644 "$LIMIT_CONTROLLER_PATH"
-handle_success "LimitController created"
+chmod 644 "$REMOTE_PATH"
+handle_success "ProtectionController.php installed"
 
 ##############################################################################
-# 5. CREATE LIMIT REQUEST FORM
+# 3. MODIFIED SERVER CREATION SERVICE (With Validation)
 ##############################################################################
-echo ""
-handle_info "[5/12] Creating UpdateUserLimitRequest..."
+handle_title "Installing ServerCreationService.php..."
+REMOTE_PATH="${PTERODACTYL_PATH}/app/Services/Servers/ServerCreationService.php"
+BACKUP_PATH="${REMOTE_PATH}.bak_${TIMESTAMP}"
 
-REQUEST_PATH="${PTERODACTYL_PATH}/app/Http/Requests/Admin/UpdateUserLimitRequest.php"
-mkdir -p "$(dirname "$REQUEST_PATH")"
+if [ -f "$REMOTE_PATH" ]; then
+    cp "$REMOTE_PATH" "$BACKUP_PATH"
+    handle_success "Backup created: $BACKUP_PATH"
+fi
 
-cat > "$REQUEST_PATH" << 'PHPEOF'
+# Create modified version with protection
+cat > "$REMOTE_PATH" << 'PHPEOF'
 <?php
 
-namespace Pterodactyl\Http\Requests\Admin;
+namespace Pterodactyl\Services\Servers;
 
-use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Support\Arr;
+use Pterodactyl\Models\Server;
+use Pterodactyl\Models\Allocation;
+use Pterodactyl\Services\Protection\ProtectionService;
+use Pterodactyl\Contracts\Repository\ServerRepositoryInterface;
+use Pterodactyl\Contracts\Repository\AllocationRepositoryInterface;
 
-class UpdateUserLimitRequest extends FormRequest
+class ServerCreationService
 {
-    public function authorize(): bool
+    public function __construct(
+        private AllocationRepositoryInterface $allocationRepository,
+        private ServerRepositoryInterface $repository,
+        private ProtectionService $protectionService
+    ) {}
+
+    public function handle(array $data, bool $skipValidation = false): Server
     {
-        return $this->user()->id === 1;
+        if (!$skipValidation) {
+            $this->protectionService->validateServerLimits($data);
+        }
+
+        return $this->repository->create(array_merge([
+            'external_id' => Arr::get($data, 'external_id'),
+            'owner_id' => $data['owner_id'],
+            'node_id' => $data['node_id'],
+            'allocation_id' => $data['allocation_id'],
+            'nest_id' => $data['nest_id'],
+            'egg_id' => $data['egg_id'],
+            'name' => $data['name'],
+            'description' => Arr::get($data, 'description'),
+            'status' => null,
+            'memory' => $data['memory'],
+            'swap' => $data['swap'] ?? 0,
+            'disk' => $data['disk'],
+            'cpu' => $data['cpu'],
+            'threads' => Arr::get($data, 'threads'),
+            'io' => $data['io'] ?? 500,
+            'database_limit' => Arr::get($data, 'database_limit'),
+            'allocation_limit' => Arr::get($data, 'allocation_limit'),
+            'backup_limit' => Arr::get($data, 'backup_limit'),
+        ], $this->generateRandomDatabaseName($data)));
     }
 
-    public function rules(): array
+    private function generateRandomDatabaseName(array $data): array
     {
-        return [
-            'max_ram' => 'required|integer|min:0',
-            'max_disk' => 'required|integer|min:0',
-            'max_cpu' => 'required|integer|min:0|max:1000',
-            'max_servers' => 'required|integer|min:0',
-        ];
-    }
+        if (!isset($data['database_limit']) || $data['database_limit'] <= 0) {
+            return [];
+        }
 
-    public function messages(): array
-    {
+        $append = str_replace('-', '', str_split(uuid_create(UUID_TYPE_RANDOM), 8)[0]);
         return [
-            'max_ram.required' => 'Batas RAM wajib diisi',
-            'max_ram.integer' => 'RAM harus berupa angka',
-            'max_ram.min' => 'RAM tidak boleh negatif',
-            
-            'max_disk.required' => 'Batas Disk wajib diisi',
-            'max_disk.integer' => 'Disk harus berupa angka',
-            'max_disk.min' => 'Disk tidak boleh negatif',
-            
-            'max_cpu.required' => 'Batas CPU wajib diisi',
-            'max_cpu.integer' => 'CPU harus berupa angka',
-            'max_cpu.min' => 'CPU tidak boleh negatif',
-            'max_cpu.max' => 'CPU maksimal 1000%',
-            
-            'max_servers.required' => 'Batas server wajib diisi',
-            'max_servers.integer' => 'Jumlah server harus berupa angka',
-            'max_servers.min' => 'Jumlah server tidak boleh negatif',
+            'database_host_id' => Arr::get($data, 'database_host_id'),
+            'database' => sprintf('db_%d_%s', $data['owner_id'], $append),
+            'database_username' => sprintf('u_%d_%s', $data['owner_id'], $append),
+            'database_password' => encrypt(str_random(24)),
         ];
     }
 }
 PHPEOF
-
-chmod 644 "$REQUEST_PATH"
-handle_success "UpdateUserLimitRequest created"
+chmod 644 "$REMOTE_PATH"
+handle_success "ServerCreationService.php installed with limits"
 
 ##############################################################################
-# 6. CREATE BLADE TEMPLATES FOR LIMIT UI
+# 4. API SERVER STORE CONTROLLER (API Protection)
 ##############################################################################
-echo ""
-handle_info "[6/12] Creating Blade templates..."
+handle_title "Installing Api/Client/ServerStoreController.php..."
+REMOTE_PATH="${PTERODACTYL_PATH}/app/Http/Controllers/Api/Client/ServerStoreController.php"
+BACKUP_PATH="${REMOTE_PATH}.bak_${TIMESTAMP}"
 
-# Create directories
-BLADE_PATH="${PTERODACTYL_PATH}/resources/views/admin/limits"
-mkdir -p "$BLADE_PATH"
+if [ -f "$REMOTE_PATH" ]; then
+    cp "$REMOTE_PATH" "$BACKUP_PATH"
+    handle_success "Backup created: $BACKUP_PATH"
+fi
 
-# Create index.blade.php
-cat > "${BLADE_PATH}/index.blade.php" << 'HTMLBLADE'
-@extends('layouts.admin')
-@section('title')
-    Manajemen Limit Pengguna
-@endsection
+mkdir -p "$(dirname "$REMOTE_PATH")"
 
-@section('content-header')
-    <h1>Manajemen Limit Pengguna<small>Atur batasan resource untuk setiap pengguna</small></h1>
-    <ol class="breadcrumb">
-        <li><a href="{{ route('admin.index') }}">Admin</a></li>
-        <li class="active">Limit Pengguna</li>
-    </ol>
-@endsection
+cat > "$REMOTE_PATH" << 'PHPEOF'
+<?php
 
+namespace Pterodactyl\Http\Controllers\Api\Client;
+
+use Illuminate\Http\Request;
+use Illuminate\Http\JsonResponse;
+use Pterodactyl\Services\Protection\ProtectionService;
+use Pterodactyl\Services\Servers\ServerCreationService;
+use Pterodactyl\Http\Controllers\Api\Client\ClientApiController;
+use Pterodactyl\Http\Requests\Api\Client\Servers\StoreServerRequest;
+
+class ServerStoreController extends ClientApiController
+{
+    public function __construct(
+        private ServerCreationService $creationService,
+        private ProtectionService $protectionService
+    ) {
+        parent::__construct();
+    }
+
+    public function __invoke(StoreServerRequest $request): JsonResponse
+    {
+        $this->protectionService->validateServerLimits($request->validated());
+
+        $server = $this->creationService->handle($request->validated());
+        
+        return new JsonResponse([
+            'data' => [
+                'id' => $server->id,
+                'uuid' => $server->uuid,
+                'name' => $server->name,
+            ],
+        ], JsonResponse::HTTP_CREATED);
+    }
+}
+PHPEOF
+chmod 644 "$REMOTE_PATH"
+handle_success "Api ServerStoreController installed"
+
+##############################################################################
+# 5. CUSTOM 403 ERROR VIEW
+##############################################################################
+handle_title "Installing custom 403 error page..."
+REMOTE_PATH="${PTERODACTYL_PATH}/resources/views/errors/403.blade.php"
+mkdir -p "$(dirname "$REMOTE_PATH")"
+
+cat > "$REMOTE_PATH" << 'PHPEOF'
+@extends('templates/core')
+@section('title', 'Access Denied')
 @section('content')
-<div class="row">
-    <div class="col-xs-12">
-        <div class="box">
-            <div class="box-header with-border">
-                <h3 class="box-title">Daftar Pengguna</h3>
-                <div class="box-tools">
-                    <form action="{{ route('admin.limits') }}" method="GET">
-                        <div class="input-group input-group-sm" style="width: 250px;">
-                            <input type="text" name="search" class="form-control pull-right" placeholder="Cari pengguna..." value="{{ request()->input('search') }}">
-                            <div class="input-group-btn">
-                                <button type="submit" class="btn btn-default"><i class="fa fa-search"></i></button>
-                            </div>
-                        </div>
-                    </form>
-                </div>
-            </div>
-            <div class="box-body table-responsive no-padding">
-                <table class="table table-hover">
-                    <thead>
-                        <tr>
-                            <th>ID</th>
-                            <th>Username</th>
-                            <th>Email</th>
-                            <th>RAM Limit</th>
-                            <th>Disk Limit</th>
-                            <th>CPU Limit</th>
-                            <th>Server Limit</th>
-                            <th>Aksi</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        @foreach($users as $user)
-                        <tr>
-                            <td>{{ $user->id }}</td>
-                            <td>{{ $user->username }}</td>
-                            <td>{{ $user->email }}</td>
-                            <td>
-                                @if($user->limit && $user->limit->max_ram === 0)
-                                    <span class="label label-success">Unlimited</span>
-                                @elseif($user->limit)
-                                    <span class="label label-primary">{{ $user->limit->max_ram }} MB</span>
-                                @else
-                                    <span class="label label-default">Default</span>
-                                @endif
-                            </td>
-                            <td>
-                                @if($user->limit && $user->limit->max_disk === 0)
-                                    <span class="label label-success">Unlimited</span>
-                                @elseif($user->limit)
-                                    <span class="label label-primary">{{ $user->limit->max_disk }} MB</span>
-                                @else
-                                    <span class="label label-default">Default</span>
-                                @endif
-                            </td>
-                            <td>
-                                @if($user->limit && $user->limit->max_cpu === 0)
-                                    <span class="label label-success">Unlimited</span>
-                                @elseif($user->limit)
-                                    <span class="label label-primary">{{ $user->limit->max_cpu }}%</span>
-                                @else
-                                    <span class="label label-default">Default</span>
-                                @endif
-                            </td>
-                            <td>
-                                @if($user->limit && $user->limit->max_servers === 0)
-                                    <span class="label label-success">Unlimited</span>
-                                @elseif($user->limit)
-                                    <span class="label label-primary">{{ $user->limit->max_servers }} Server</span>
-                                @else
-                                    <span class="label label-default">Default</span>
-                                @endif
-                            </td>
-                            <td>
-                                <a href="{{ route('admin.limits.view', $user->id) }}" class="btn btn-xs btn-primary">
-                                    <i class="fa fa-edit"></i> Edit Limit
-                                </a>
-                            </td>
-                        </tr>
-                        @endforeach
-                    </tbody>
-                </table>
-            </div>
-            <div class="box-footer">
-                <div class="pull-right">
-                    {{ $users->links() }}
-                </div>
+<div class="min-h-screen flex items-center justify-center bg-gray-50 py-12 px-4 sm:px-6 lg:px-8">
+    <div class="max-w-md w-full text-center">
+        <div class="mb-6">
+            <div class="mx-auto flex items-center justify-center h-24 w-24 rounded-full bg-red-100">
+                <svg class="h-16 w-16 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                </svg>
             </div>
         </div>
+        <h1 class="text-6xl font-bold text-gray-900 mb-2">403</h1>
+        <h2 class="text-2xl font-semibold text-gray-800 mb-4">ACCESS DENIED</h2>
+        <p class="text-gray-600 mb-6">{{ $exception->getMessage() ?: 'You do not have permission to access this resource.' }}</p>
+        @if(Auth::user() && Auth::user()->id !== 1)
+            <div class="bg-yellow-50 border-l-4 border-yellow-400 p-4 mb-6 text-left">
+                <div class="flex">
+                    <div class="flex-shrink-0">
+                        <svg class="h-5 w-5 text-yellow-400" fill="currentColor" viewBox="0 0 20 20">
+                            <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"></path>
+                        </svg>
+                    </div>
+                    <div class="ml-3">
+                        <p class="text-sm text-yellow-700">
+                            This action is restricted to Main Administrator Only.
+                        </p>
+                    </div>
+                </div>
+            </div>
+        @endif
+        <div class="space-y-3">
+            <a href="{{ url()->previous() }}" class="w-full inline-flex justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
+                ← Go Back
+            </a>
+            <a href="/" class="w-full inline-flex justify-center py-2 px-4 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
+                🏠 Dashboard
+            </a>
+        </div>
+        @if(Auth::user() && Auth::user()->id === 1)
+            <div class="mt-6 pt-6 border-t border-gray-200">
+                <a href="/admin/protection" class="text-sm text-blue-600 hover:text-blue-500">
+                    ⚙️ Protection Settings
+                </a>
+            </div>
+        @endif
     </div>
 </div>
 @endsection
-HTMLBLADE
+PHPEOF
+chmod 644 "$REMOTE_PATH"
+handle_success "Custom 403 page installed"
 
-# Create view.blade.php
-cat > "${BLADE_PATH}/view.blade.php" << 'HTMLBLADE'
+##############################################################################
+# 6. PROTECTION SETTINGS UI VIEW
+##############################################################################
+handle_title "Installing protection settings UI..."
+REMOTE_PATH="${PTERODACTYL_PATH}/resources/views/admin/protection/index.blade.php"
+mkdir -p "$(dirname "$REMOTE_PATH")"
+
+cat > "$REMOTE_PATH" << 'PHPEOF'
 @extends('layouts.admin')
-@section('title')
-    Edit Limit: {{ $user->username }}
-@endsection
-
-@section('content-header')
-    <h1>Edit Limit Pengguna<small>Atur batasan untuk {{ $user->username }}</small></h1>
-    <ol class="breadcrumb">
-        <li><a href="{{ route('admin.index') }}">Admin</a></li>
-        <li><a href="{{ route('admin.limits') }}">Limit Pengguna</a></li>
-        <li class="active">Edit Limit</li>
-    </ol>
-@endsection
-
+@section('title', 'Protection Settings')
 @section('content')
-<div class="row">
-    <div class="col-md-6">
-        <div class="box box-primary">
-            <div class="box-header with-border">
-                <h3 class="box-title">Informasi Pengguna</h3>
+<div class="min-h-screen bg-gray-100 py-8">
+    <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="bg-white shadow-lg rounded-lg overflow-hidden">
+            <div class="bg-gradient-to-r from-red-600 to-pink-600 px-6 py-4">
+                <h1 class="text-2xl font-bold text-white flex items-center">
+                    🔐 Protection Settings
+                </h1>
+                <p class="text-red-100 mt-1">Configure server creation limits and access controls</p>
             </div>
-            <div class="box-body">
-                <dl>
-                    <dt>ID Pengguna</dt>
-                    <dd>{{ $user->id }}</dd>
-                    
-                    <dt>Username</dt>
-                    <dd>{{ $user->username }}</dd>
-                    
-                    <dt>Email</dt>
-                    <dd>{{ $user->email }}</dd>
-                    
-                    <dt>Jumlah Server Saat Ini</dt>
-                    <dd>{{ $user->servers()->count() }} server</dd>
-                    
-                    <dt>Tanggal Bergabung</dt>
-                    <dd>{{ $user->created_at->format('d M Y H:i') }}</dd>
-                </dl>
-            </div>
-        </div>
-        
-        <div class="box box-warning">
-            <div class="box-header with-border">
-                <h3 class="box-title">Reset ke Default</h3>
-            </div>
-            <div class="box-body">
-                <p>Reset limit pengguna ke nilai default:</p>
-                <ul>
-                    <li>RAM: 1024 MB</li>
-                    <li>Disk: 10240 MB</li>
-                    <li>CPU: 100%</li>
-                    <li>Server: 1</li>
-                </ul>
-                <form action="{{ route('admin.limits.reset', $user->id) }}" method="POST">
-                    @csrf
-                    @method('PATCH')
-                    <button type="submit" class="btn btn-warning" onclick="return confirm('Reset limit ke default?')">
-                        <i class="fa fa-refresh"></i> Reset ke Default
-                    </button>
-                </form>
-            </div>
-        </div>
-    </div>
-    
-    <div class="col-md-6">
-        <div class="box box-success">
-            <div class="box-header with-border">
-                <h3 class="box-title">Pengaturan Limit</h3>
-            </div>
-            <form action="{{ route('admin.limits.update', $user->id) }}" method="POST">
+            
+            <form action="{{ route('admin.protection.update') }}" method="POST">
                 @csrf
-                @method('PATCH')
                 
-                <div class="box-body">
-                    <div class="form-group">
-                        <label for="max_ram">Batas RAM (MB)</label>
-                        <div class="input-group">
-                            <input type="number" 
-                                   class="form-control" 
-                                   id="max_ram" 
-                                   name="max_ram" 
-                                   value="{{ old('max_ram', $limit->max_ram) }}"
-                                   min="0"
-                                   step="128"
-                                   required>
-                            <span class="input-group-addon">MB</span>
-                        </div>
-                        <p class="text-muted small">
-                            0 = Unlimited. Minimal 128 MB untuk server berfungsi.
-                            Default: 1024 MB
-                        </p>
-                        @error('max_ram')
-                            <span class="text-danger">{{ $message }}</span>
-                        @enderror
+                <div class="p-6 space-y-6">
+                    <!-- Protected User ID -->
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">
+                            🛡️ Protected Admin User ID
+                        </label>
+                        <input type="number" name="protected_user_id" value="{{ $protected_user_id }}" 
+                               class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-transparent"
+                               required min="1">
+                        <p class="text-xs text-gray-500 mt-1">Only this user ID can bypass all protections (default: 1)</p>
                     </div>
-                    
-                    <div class="form-group">
-                        <label for="max_disk">Batas Disk (MB)</label>
-                        <div class="input-group">
-                            <input type="number" 
-                                   class="form-control" 
-                                   id="max_disk" 
-                                   name="max_disk" 
-                                   value="{{ old('max_disk', $limit->max_disk) }}"
-                                   min="0"
-                                   step="1024"
-                                   required>
-                            <span class="input-group-addon">MB</span>
-                        </div>
-                        <p class="text-muted small">
-                            0 = Unlimited. Minimal 1024 MB untuk server berfungsi.
-                            Default: 10240 MB (10 GB)
-                        </p>
-                        @error('max_disk')
-                            <span class="text-danger">{{ $message }}</span>
-                        @enderror
+
+                    <!-- Custom 403 Message -->
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">
+                            🚫 Custom 403 Error Message
+                        </label>
+                        <input type="text" name="custom_403_message" value="{{ $custom_403_message }}" 
+                               class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-transparent"
+                               required maxlength="255">
+                        <p class="text-xs text-gray-500 mt-1">Message shown when access is denied</p>
                     </div>
-                    
-                    <div class="form-group">
-                        <label for="max_cpu">Batas CPU (%)</label>
-                        <div class="input-group">
-                            <input type="number" 
-                                   class="form-control" 
-                                   id="max_cpu" 
-                                   name="max_cpu" 
-                                   value="{{ old('max_cpu', $limit->max_cpu) }}"
-                                   min="0"
-                                   max="1000"
-                                   step="10"
-                                   required>
-                            <span class="input-group-addon">%</span>
+
+                    <!-- Minimum Limits -->
+                    <div class="bg-red-50 border border-red-200 rounded-lg p-4">
+                        <h3 class="text-lg font-semibold text-red-800 mb-3 flex items-center">
+                            ⚠️ Minimum Server Creation Limits (for non-admin)
+                        </h3>
+                        
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">RAM (MB)</label>
+                                <input type="number" name="min_ram" value="{{ $min_limits['ram'] }}" 
+                                       class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-red-500"
+                                       required min="1">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">Disk (MB)</label>
+                                <input type="number" name="min_disk" value="{{ $min_limits['disk'] }}" 
+                                       class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-red-500"
+                                       required min="1">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">CPU (%)</label>
+                                <input type="number" name="min_cpu" value="{{ $min_limits['cpu'] }}" 
+                                       class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-red-500"
+                                       required min="1">
+                            </div>
                         </div>
-                        <p class="text-muted small">
-                            0 = Unlimited. 100% = 1 core penuh.
-                            Default: 100%
-                        </p>
-                        @error('max_cpu')
-                            <span class="text-danger">{{ $message }}</span>
-                        @enderror
-                    </div>
-                    
-                    <div class="form-group">
-                        <label for="max_servers">Batas Jumlah Server</label>
-                        <div class="input-group">
-                            <input type="number" 
-                                   class="form-control" 
-                                   id="max_servers" 
-                                   name="max_servers" 
-                                   value="{{ old('max_servers', $limit->max_servers) }}"
-                                   min="0"
-                                   required>
-                            <span class="input-group-addon">Server</span>
+                        
+                        <div class="mt-3 bg-yellow-50 border border-yellow-200 rounded-md p-3">
+                            <p class="text-sm text-yellow-800">
+                                ⚠️ <strong>Important:</strong> These limits apply to ALL users except the protected admin ID above. 
+                                Setting "0" is not allowed for non-admins.
+                            </p>
                         </div>
-                        <p class="text-muted small">
-                            0 = Unlimited. Server saat ini: {{ $user->servers()->count() }}
-                            Default: 1 server
-                        </p>
-                        @error('max_servers')
-                            <span class="text-danger">{{ $message }}</span>
-                        @enderror
                     </div>
-                    
-                    <div class="callout callout-info">
-                        <h4><i class="fa fa-info-circle"></i> Informasi Penting</h4>
-                        <ul>
-                            <li>Limit berlaku untuk pembuatan server baru</li>
-                            <li>Server yang sudah ada tidak terpengaruh</li>
-                            <li>Validasi berlaku di panel dan API</li>
-                            <li>Admin ID 1 selalu memiliki akses unlimited</li>
-                        </ul>
+
+                    <!-- Current Status -->
+                    <div class="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                        <h4 class="text-sm font-semibold text-blue-800 mb-2">📊 Current Status</h4>
+                        <div class="text-sm text-blue-700 space-y-1">
+                            <p>• Main Admin ID: <strong class="text-blue-900">{{ $protected_user_id }}</strong></p>
+                            <p>• 403 Message: <em>"{{ $custom_403_message }}"</em></p>
+                            <p>• Min RAM: <strong>{{ $min_limits['ram'] }} MB</strong></p>
+                            <p>• Min Disk: <strong>{{ $min_limits['disk'] }} MB</strong></p>
+                            <p>• Min CPU: <strong>{{ $min_limits['cpu'] }}%</strong></p>
+                        </div>
                     </div>
                 </div>
-                
-                <div class="box-footer">
-                    <button type="submit" class="btn btn-success">
-                        <i class="fa fa-save"></i> Simpan Perubahan
+
+                <div class="px-6 py-4 bg-gray-50 border-t border-gray-200 flex justify-between items-center">
+                    <div class="text-sm text-gray-500">
+                        🔒 Only visible to Main Administrator (ID: {{ $protected_user_id }})
+                    </div>
+                    <button type="submit" 
+                            class="inline-flex justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500">
+                        💾 Save Protection Settings
                     </button>
-                    <a href="{{ route('admin.limits') }}" class="btn btn-default">
-                        <i class="fa fa-arrow-left"></i> Kembali
-                    </a>
                 </div>
             </form>
         </div>
+
+        <!-- Quick Actions -->
+        <div class="mt-6 grid grid-cols-1 md:grid-cols-2 gap-4">
+            <a href="/admin" class="bg-white shadow rounded-lg p-4 flex items-center space-x-3 hover:shadow-md transition-shadow">
+                <div class="bg-blue-100 p-2 rounded-lg">
+                    <svg class="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"></path>
+                    </svg>
+                </div>
+                <div>
+                    <p class="font-medium text-gray-900">Admin Dashboard</p>
+                    <p class="text-sm text-gray-500">Back to main panel</p>
+                </div>
+            </a>
+            
+            <a href="/admin/users" class="bg-white shadow rounded-lg p-4 flex items-center space-x-3 hover:shadow-md transition-shadow">
+                <div class="bg-green-100 p-2 rounded-lg">
+                    <svg class="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197m13.5-9a2.5 2.5 0 11-5 0 2.5 2.5 0 015 0z"></path>
+                    </svg>
+                </div>
+                <div>
+                    <p class="font-medium text-gray-900">User Management</p>
+                    <p class="text-sm text-gray-500">Manage user accounts</p>
+                </div>
+            </a>
+        </div>
     </div>
 </div>
 @endsection
-HTMLBLADE
-
-handle_success "Blade templates created"
-
-##############################################################################
-# 7. CREATE CUSTOM 403 ERROR PAGE
-##############################################################################
-echo ""
-handle_info "[7/12] Creating custom 403 error page..."
-
-ERRORS_PATH="${PTERODACTYL_PATH}/resources/views/errors"
-mkdir -p "$ERRORS_PATH"
-
-cat > "${ERRORS_PATH}/403.blade.php" << 'HTMLBLADE'
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>403 - Access Denied</title>
-    
-    <!-- Google Font -->
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
-    
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        
-        body {
-            font-family: 'Inter', sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: #fff;
-        }
-        
-        .error-container {
-            background: rgba(255, 255, 255, 0.1);
-            backdrop-filter: blur(10px);
-            border-radius: 20px;
-            padding: 60px;
-            max-width: 600px;
-            width: 90%;
-            text-align: center;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-            border: 1px solid rgba(255, 255, 255, 0.2);
-        }
-        
-        .error-code {
-            font-size: 120px;
-            font-weight: 700;
-            background: linear-gradient(45deg, #ff6b6b, #ee5a24);
-            -webkit-background-clip: text;
-            background-clip: text;
-            color: transparent;
-            margin-bottom: 20px;
-            line-height: 1;
-        }
-        
-        .error-title {
-            font-size: 32px;
-            font-weight: 600;
-            margin-bottom: 20px;
-            color: #fff;
-        }
-        
-        .error-message {
-            font-size: 18px;
-            line-height: 1.6;
-            margin-bottom: 30px;
-            color: rgba(255, 255, 255, 0.9);
-            background: rgba(0, 0, 0, 0.2);
-            padding: 20px;
-            border-radius: 10px;
-            border-left: 4px solid #ff6b6b;
-        }
-        
-        .admin-note {
-            background: rgba(255, 193, 7, 0.2);
-            border: 1px solid rgba(255, 193, 7, 0.3);
-            padding: 15px;
-            border-radius: 10px;
-            margin: 25px 0;
-            text-align: left;
-        }
-        
-        .admin-note h4 {
-            color: #ffc107;
-            margin-bottom: 10px;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-        
-        .action-buttons {
-            display: flex;
-            gap: 15px;
-            justify-content: center;
-            flex-wrap: wrap;
-            margin-top: 30px;
-        }
-        
-        .btn {
-            padding: 12px 30px;
-            border-radius: 50px;
-            text-decoration: none;
-            font-weight: 600;
-            display: inline-flex;
-            align-items: center;
-            gap: 10px;
-            transition: all 0.3s ease;
-        }
-        
-        .btn-primary {
-            background: linear-gradient(45deg, #4facfe, #00f2fe);
-            color: white;
-            border: none;
-        }
-        
-        .btn-secondary {
-            background: rgba(255, 255, 255, 0.1);
-            color: white;
-            border: 2px solid rgba(255, 255, 255, 0.3);
-        }
-        
-        .btn:hover {
-            transform: translateY(-3px);
-            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.2);
-        }
-        
-        .icon {
-            width: 24px;
-            height: 24px;
-            fill: currentColor;
-        }
-        
-        .security-badge {
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-            background: rgba(255, 107, 107, 0.2);
-            padding: 8px 16px;
-            border-radius: 50px;
-            font-size: 14px;
-            margin-top: 20px;
-        }
-        
-        @media (max-width: 768px) {
-            .error-container {
-                padding: 30px;
-            }
-            
-            .error-code {
-                font-size: 80px;
-            }
-            
-            .error-title {
-                font-size: 24px;
-            }
-            
-            .action-buttons {
-                flex-direction: column;
-            }
-            
-            .btn {
-                width: 100%;
-                justify-content: center;
-            }
-        }
-    </style>
-</head>
-<body>
-    <div class="error-container">
-        <div class="error-code">403</div>
-        <div class="error-title">⚠️ Access Denied</div>
-        
-        <div class="error-message">
-            @if(isset($exception) && $exception->getMessage())
-                {{ $exception->getMessage() }}
-            @else
-                You don't have permission to access this page. This area is restricted to administrators only.
-            @endif
-        </div>
-        
-        @if(auth()->check() && auth()->user()->id !== 1)
-        <div class="admin-note">
-            <h4>
-                <svg class="icon" viewBox="0 0 24 24">
-                    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/>
-                </svg>
-                Administrator Access Required
-            </h4>
-            <p>Your account (ID: {{ auth()->user()->id }}) does not have sufficient privileges to perform this action. Only the main administrator (ID: 1) can access this functionality.</p>
-            <p>If you believe this is an error, please contact your system administrator.</p>
-        </div>
-        @endif
-        
-        <div class="action-buttons">
-            <a href="{{ url()->previous() }}" class="btn btn-secondary">
-                <svg class="icon" viewBox="0 0 24 24">
-                    <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/>
-                </svg>
-                Go Back
-            </a>
-            
-            <a href="{{ route('index') }}" class="btn btn-primary">
-                <svg class="icon" viewBox="0 0 24 24">
-                    <path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/>
-                </svg>
-                Return Home
-            </a>
-        </div>
-        
-        <div class="security-badge">
-            <svg class="icon" viewBox="0 0 24 24">
-                <path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/>
-            </svg>
-            Security Protection Active
-        </div>
-    </div>
-</body>
-</html>
-HTMLBLADE
-
-handle_success "Custom 403 page created"
+PHPEOF
+chmod 644 "$REMOTE_PATH"
+handle_success "Protection settings UI installed"
 
 ##############################################################################
-# 8. ADD ROUTES FOR LIMIT MANAGEMENT
+# 7. ROUTES INJECTION (Add to web.php)
 ##############################################################################
-echo ""
-handle_info "[8/12] Adding routes for limit management..."
+handle_title "Adding protection routes..."
+ROUTES_FILE="${PTERODACTYL_PATH}/routes/base/admin.php"
+ROUTES_BACKUP="${ROUTES_FILE}.bak_${TIMESTAMP}"
 
-ROUTES_PATH="${PTERODACTYL_PATH}/routes/admin.php"
+if [ -f "$ROUTES_FILE" ]; then
+    cp "$ROUTES_FILE" "$ROUTES_BACKUP"
+    handle_success "Routes backup created: $ROUTES_BACKUP"
+fi
 
-# Backup routes
-cp "$ROUTES_PATH" "${ROUTES_PATH}.bak_${TIMESTAMP}"
+# Add protection routes before the last });
+cat << 'PHPEOF' >> "$ROUTES_FILE"
 
-# Add routes if not exist
-if ! grep -q "Route::resource('limits'" "$ROUTES_PATH"; then
-    cat >> "$ROUTES_PATH" << 'ROUTES'
-
-// User Limit Management Routes (Admin Only)
-Route::group(['prefix' => 'limits', 'as' => 'limits.'], function () {
-    Route::get('/', 'LimitController@index')->name('index');
-    Route::get('/{user}', 'LimitController@view')->name('view');
-    Route::patch('/{user}', 'LimitController@update')->name('update');
-    Route::patch('/{user}/reset', 'LimitController@reset')->name('reset');
-    
-    // API Routes for limit checking
-    Route::get('/{user}/api', 'LimitController@getLimitsApi')->name('api.get');
-    Route::post('/check', 'LimitController@checkUserLimit')->name('check');
+// Protection Settings (Admin Only)
+Route::group(['prefix' => 'protection'], function () {
+    Route::get('/', [ProtectionController::class, 'index'])->name('admin.protection');
+    Route::post('/update', [ProtectionController::class, 'update'])->name('admin.protection.update');
 });
-ROUTES
-    handle_success "Routes added to admin.php"
-else
-    handle_info "Routes already exist, skipping"
+PHPEOF
+handle_success "Protection routes added"
+
+##############################################################################
+# 8. MODIFIED ADMIN SERVER CREATION CONTROLLER
+##############################################################################
+handle_title "Installing Admin/ServerController.php..."
+REMOTE_PATH="${PTERODACTYL_PATH}/app/Http/Controllers/Admin/Servers/ServerController.php"
+BACKUP_PATH="${REMOTE_PATH}.bak_${TIMESTAMP}"
+
+if [ -f "$REMOTE_PATH" ]; then
+    cp "$REMOTE_PATH" "$BACKUP_PATH"
+    handle_success "Backup created: $BACKUP_PATH"
 fi
 
-##############################################################################
-# 9. API SERVER CONTROLLER - MANUAL ONLY (FIXED)
-##############################################################################
-echo ""
-handle_info "[9/12] Skipping auto-modify API ServerController to avoid bash syntax errors."
+mkdir -p "$(dirname "$REMOTE_PATH")"
 
-API_SERVER_CONTROLLER_PATH="${PTERODACTYL_PATH}/app/Http/Controllers/Api/Application/Servers/ServerController.php"
-
-if [ -f "$API_SERVER_CONTROLLER_PATH" ]; then
-    cp "$API_SERVER_CONTROLLER_PATH" "${API_SERVER_CONTROLLER_PATH}.bak_${TIMESTAMP}"
-    handle_success "Backup created: ${API_SERVER_CONTROLLER_PATH}.bak_${TIMESTAMP}"
-
-    echo ""
-    echo "⚠️  MANUAL MODIFICATION REQUIRED:"
-    echo "================================"
-    echo "Edit file:"
-    echo "  $API_SERVER_CONTROLLER_PATH"
-    echo ""
-    echo "Add this line in the use section:"
-    echo "  use Pterodactyl\\Services\\Users\\UserLimitService;"
-    echo ""
-    echo "Then inside store() method, add:"
-    echo ""
-    echo "  // Check user limits"
-    echo "  \$limitService = app(UserLimitService::class);"
-    echo "  \$user = User::findOrFail(\$request->input('owner_id'));"
-    echo "  \$limitService->checkCreateServerLimits("
-    echo "      \$user,"
-    echo "      \$request->input('memory'),"
-    echo "      \$request->input('disk'),"
-    echo "      \$request->input('cpu')"
-    echo "  );"
-else
-    handle_info "API ServerController not found, skipping."
-fi
-##############################################################################
-# 10. ADD SIDEBAR MENU FOR ADMIN (SAFE VERSION)
-##############################################################################
-echo ""
-handle_info "[10/12] Adding sidebar menu for admin (safe mode)..."
-
-SIDEBAR_PATH="${PTERODACTYL_PATH}/resources/views/admin/layouts/sidebar.blade.php"
-
-if [ -f "$SIDEBAR_PATH" ]; then
-    cp "$SIDEBAR_PATH" "${SIDEBAR_PATH}.bak_${TIMESTAMP}"
-
-    if ! grep -q "User Limits" "$SIDEBAR_PATH"; then
-        sed -i "/<li class=.*Users.*/a \
-<li class=\"{{ Request::is('*admin/limits*') ? 'active' : '' }}\">\
-<a href=\"{{ route('admin.limits') }}\">\
-<i class=\"fa fa-sliders\"></i> User Limits\
-</a>\
-</li>" "$SIDEBAR_PATH"
-
-        handle_success "Sidebar menu added under Users"
-    else
-        handle_info "Sidebar menu already exists, skipping"
-    fi
-else
-    handle_error "Sidebar file not found"
-fi
-##############################################################################
-# 11. CREATE MIDDLEWARE FOR LIMIT VALIDATION
-##############################################################################
-echo ""
-handle_info "[11/12] Creating LimitValidationMiddleware..."
-
-MIDDLEWARE_PATH="${PTERODACTYL_PATH}/app/Http/Middleware/LimitValidationMiddleware.php"
-mkdir -p "$(dirname "$MIDDLEWARE_PATH")"
-
-cat > "$MIDDLEWARE_PATH" << 'PHPEOF'
+cat > "$REMOTE_PATH" << 'PHPEOF'
 <?php
 
-namespace Pterodactyl\Http\Middleware;
+namespace Pterodactyl\Http\Controllers\Admin\Servers;
 
-use Closure;
+use Illuminate\View\View;
 use Illuminate\Http\Request;
-use Pterodactyl\Models\User;
-use Pterodactyl\Services\Users\UserLimitService;
+use Pterodactyl\Models\Server;
+use Illuminate\Support\Facades\Auth;
+use Pterodactyl\Exceptions\DisplayException;
+use Prologue\Alerts\AlertsMessageBag;
+use Illuminate\View\Factory as ViewFactory;
+use Pterodactyl\Http\Controllers\Controller;
+use Pterodactyl\Services\Protection\ProtectionService;
+use Pterodactyl\Services\Servers\ServerCreationService;
+use Pterodactyl\Http\Requests\Admin\Servers\ServerFormRequest;
+use Pterodactyl\Services\Servers\ServerDeletionService;
+use Pterodactyl\Services\Servers\DetailsModificationService;
+use Pterodactyl\Contracts\Repository\ServerRepositoryInterface;
+use Pterodactyl\Contracts\Repository\NodeRepositoryInterface;
 
-class LimitValidationMiddleware
+class ServerController extends Controller
 {
-    public function __construct(private UserLimitService $limitService)
-    {}
-
-    public function handle(Request $request, Closure $next)
-    {
-        // Skip for admin ID 1
-        if ($request->user() && $request->user()->id === 1) {
-            return $next($request);
-        }
-
-        // Only validate for server creation/update
-        if ($this->shouldValidate($request)) {
-            $userId = $request->input('owner_id') ?? $request->user()->id;
-            $user = User::find($userId);
-            
-            if ($user && $user->id !== 1) {
-                try {
-                    $this->limitService->checkCreateServerLimits(
-                        $user,
-                        (int)$request->input('memory', 0),
-                        (int)$request->input('disk', 0),
-                        (int)$request->input('cpu', 0)
-                    );
-                } catch (\Pterodactyl\Exceptions\DisplayException $e) {
-                    if ($request->expectsJson()) {
-                        return response()->json([
-                            'error' => $e->getMessage()
-                        ], 400);
-                    }
-                    
-                    return back()->withInput()->withErrors([
-                        'limit' => $e->getMessage()
-                    ]);
-                }
-            }
-        }
-
-        return $next($request);
+    public function __construct(
+        private AlertsMessageBag $alert,
+        private NodeRepositoryInterface $nodeRepository,
+        private ServerCreationService $creationService,
+        private ServerDeletionService $deletionService,
+        private ServerRepositoryInterface $repository,
+        private DetailsModificationService $modificationService,
+        private ViewFactory $view,
+        private ProtectionService $protectionService
+    ) {
     }
 
-    private function shouldValidate(Request $request): bool
+    public function create(Request $request): View
     {
-        $method = $request->method();
-        $path = $request->path();
-        
-        // Validate on these paths
-        $validatePaths = [
-            'admin/servers',
-            'api/application/servers',
-            'api/client/servers',
-        ];
-        
-        foreach ($validatePaths as $validatePath) {
-            if (str_contains($path, $validatePath) && in_array($method, ['POST', 'PUT', 'PATCH'])) {
-                return true;
-            }
+        if (Auth::user()->id !== $this->protectionService->getProtectedUserId()) {
+            abort(403, $this->protectionService->getCustom403Message());
         }
-        
-        return false;
+
+        $nodes = $this->nodeRepository->setColumns(['id', 'name'])->all();
+        return $this->view->make('admin.servers.new', ['nodes' => $nodes]);
+    }
+
+    public function store(ServerFormRequest $request): mixed
+    {
+        if ($request->user()->id !== $this->protectionService->getProtectedUserId()) {
+            abort(403, $this->protectionService->getCustom403Message());
+        }
+
+        try {
+            $this->protectionService->validateServerLimits($request->normalize());
+            
+            $server = $this->creationService->handle($request->normalize());
+            $this->alert->success('Server created successfully.')->flash();
+
+            return redirect()->route('admin.servers.view', $server->id);
+        } catch (DisplayException $exception) {
+            $this->alert->danger($exception->getMessage())->flash();
+            return redirect()->route('admin.servers.new')->withInput($request->validated());
+        }
+    }
+
+    public function view(Request $request, Server $server): View
+    {
+        if (Auth::user()->id !== $this->protectionService->getProtectedUserId() && $server->owner_id !== Auth::user()->id) {
+            abort(403, $this->protectionService->getCustom403Message());
+        }
+
+        return $this->view->make('admin.servers.view', [
+            'server' => $server,
+            'notes' => $this->repository->getNotes($server->id),
+        ]);
+    }
+
+    public function delete(Request $request, Server $server): mixed
+    {
+        if ($request->user()->id !== $this->protectionService->getProtectedUserId()) {
+            abort(403, $this->protectionService->getCustom403Message());
+        }
+
+        $this->deletionService->handle($server);
+        return redirect()->route('admin.servers');
+    }
+
+    public function updateDetails(ServerFormRequest $request, Server $server): mixed
+    {
+        if ($request->user()->id !== $this->protectionService->getProtectedUserId()) {
+            abort(403, $this->protectionService->getCustom403Message());
+        }
+
+        try {
+            $this->modificationService->handle($server, $request->normalize());
+            $this->alert->success('Server details updated successfully.')->flash();
+        } catch (DisplayException $exception) {
+            $this->alert->danger($exception->getMessage())->flash();
+        }
+
+        return redirect()->route('admin.servers.view', $server->id);
     }
 }
 PHPEOF
-
-chmod 644 "$MIDDLEWARE_PATH"
-handle_success "LimitValidationMiddleware created"
+chmod 644 "$REMOTE_PATH"
+handle_success "Admin ServerController installed with protection"
 
 ##############################################################################
-# 12. REGISTER MIDDLEWARE AND RUN MIGRATION
+# 9. MENU ITEM (Add to admin sidebar)
 ##############################################################################
-echo ""
-handle_info "[12/12] Registering middleware and running migration..."
-
-# Add middleware to Kernel
-KERNEL_PATH="${PTERODACTYL_PATH}/app/Http/Kernel.php"
-if [ -f "$KERNEL_PATH" ]; then
-    cp "$KERNEL_PATH" "${KERNEL_PATH}.bak_${TIMESTAMP}"
+handle_title "Adding protection menu..."
+SIDEBAR_FILE="${PTERODACTYL_PATH}/resources/views/layouts/admin.blade.php"
+if [ -f "$SIDEBAR_FILE" ]; then
+    cp "$SIDEBAR_FILE" "$SIDEBAR_FILE.bak_${TIMESTAMP}"
     
-    # Add to $routeMiddleware array
-    sed -i "/protected \$routeMiddleware = \[/a \ \ \ \ \ \ \ \ 'limits' => \\\Pterodactyl\\Http\\Middleware\\LimitValidationMiddleware::class," "$KERNEL_PATH"
+    # Add menu item before Settings
+    sed -i '/<li><a href="{{ route('admin.settings') }}">/,/<\/li>/i \
+                <li><a href="{{ route('"'"'admin.protection'"'"') }}"><i class="fa fa-shield"></i> <span>Protection Settings</span></a></li>' "$SIDEBAR_FILE"
     
-    handle_success "Middleware registered in Kernel"
-fi
-
-##############################################################################
-# RUN DATABASE MIGRATION (SAFE MODE)
-##############################################################################
-echo ""
-handle_info "Running database migration (safe mode)..."
-
-cd "${PTERODACTYL_PATH}" || exit 1
-
-# Cek apakah migration user_limits sudah pernah dijalankan
-if mysql -u root -p panel -e "SHOW TABLES LIKE 'user_limits';" | grep -q user_limits; then
-    echo "[INFO] user_limits migration already applied, skipping"
+    handle_success "Protection menu added to sidebar"
 else
-    php artisan migrate --path="$MIGRATION_FILE" --force
+    handle_info "Sidebar file not found, skipping menu addition"
 fi
+
 ##############################################################################
 # CLEANUP & CACHE CLEAR
 ##############################################################################
-echo ""
-handle_info "Clearing Laravel cache..."
-
+handle_title "Finalizing installation..."
 cd "${PTERODACTYL_PATH}" || exit 1
 
-if php artisan cache:clear 2>/dev/null; then
-    handle_success "Cache cleared"
-else
-    handle_info "Cache clear skipped (may need manual execution)"
-fi
+# Clear caches
+php artisan cache:clear 2>/dev/null && handle_success "Cache cleared" || handle_info "Cache clear skipped"
+php artisan config:clear 2>/dev/null && handle_success "Config cache cleared" || handle_info "Config clear skipped"
+php artisan view:clear 2>/dev/null && handle_success "View cache cleared" || handle_info "View clear skipped"
 
-if php artisan config:clear 2>/dev/null; then
-    handle_success "Config cache cleared"
-else
-    handle_info "Config clear skipped (may need manual execution)"
-fi
-
-if php artisan view:clear 2>/dev/null; then
-    handle_success "View cache cleared"
-else
-    handle_info "View clear skipped (may need manual execution)"
-fi
+# Set proper permissions
+chown -R www-data:www-data "${PTERODACTYL_PATH}/app/Services/Protection" 2>/dev/null || true
+chown -R www-data:www-data "${PTERODACTYL_PATH}/app/Http/Controllers/Admin/ProtectionController.php" 2>/dev/null || true
 
 ##############################################################################
 # SUMMARY
 ##############################################################################
 echo ""
 echo "=========================================="
-echo "✅ INSTALLATION COMPLETE - VERSION 3.0"
+echo "✅ INSTALLATION COMPLETE - v3.0"
 echo "=========================================="
 echo ""
-echo "📋 NEW FEATURES INSTALLED:"
-echo "   ✓ Database migration for user_limits table"
-echo "   ✓ UserLimit model and service"
-echo "   ✓ Admin LimitController with UI"
-echo "   ✓ Blade templates for limit management"
-echo "   ✓ Custom 403 error page with design"
-echo "   ✓ Route protection for limit management"
-echo "   ✓ API validation for server creation"
-echo "   ✓ Sidebar menu for admin"
-echo "   ✓ LimitValidationMiddleware"
+echo "📋 FEATURES INSTALLED:"
+echo "   ✓ Server Creation Limits (RAM/Disk/CPU ≠ 0)"
+echo "   ✓ Protection Service for validation"
+echo "   ✓ Admin-Only Protection Settings UI"
+echo "   ✓ Custom 403 Error Page with modern design"
+echo "   ✓ API Protection for server creation"
+echo "   ✓ User-specific limit enforcement"
+echo "   ✓ Protection Settings menu in admin panel"
 echo ""
-echo "🔒 PROTECTION SYSTEM:"
-echo "   ✓ Only Admin ID 1 can access limit management"
-echo "   ✓ RAM must be > 0 for non-admin users"
-echo "   ✓ Disk must be > 0 for non-admin users"
-echo "   ✓ CPU must be > 0 for non-admin users"
-echo "   ✓ Server count limits enforced"
-echo "   ✓ Validation works via Panel AND API"
-echo "   ✓ Custom error messages"
+echo "🛡️ PROTECTION STATUS:"
+echo "   ✓ Only Admin ID 1 can access Protection Settings"
+echo "   ✓ Non-admins cannot create servers with 0 values"
+echo "   ✓ All API endpoints protected"
+echo "   ✓ Custom 403 messages displayed"
+echo "   ✓ UI completely hidden from non-admin users"
 echo ""
-echo "🎨 UI FEATURES:"
-echo "   ✓ Beautiful limit management interface"
-echo "   ✓ User-friendly 403 error page"
-echo "   ✓ Real-time limit checking"
-echo "   ✓ Reset to default functionality"
-echo "   ✓ Search and pagination"
-echo ""
-echo "🛡️ SECURITY:"
-echo "   ✓ Admin-only access to limit settings"
-echo "   ✓ Input validation and sanitization"
-echo "   ✓ CSRF protection on all forms"
-echo "   ✓ API endpoint protection"
-echo "   ✓ Database transaction safety"
+echo "🔗 ACCESS PROTECTION SETTINGS:"
+echo "   URL: /admin/protection"
+echo "   Access: Main Administrator Only"
 echo ""
 echo "📂 BACKUP LOCATION:"
-echo "   All original files backed up with timestamp"
-echo "   Pattern: [filename].bak_YYYY-MM-DD-HH-MM-SS"
+echo "   All original files backed up with pattern:"
+echo "   [filename].bak_${TIMESTAMP}"
 echo ""
-echo "⚠️ IMPORTANT NEXT STEPS:"
-echo "   1. Login as Admin ID 1"
-echo "   2. Go to Admin → User Limits"
-echo "   3. Configure limits for each user"
-echo "   4. Test server creation with limited user"
-echo ""
-echo "🔧 TECHNICAL NOTES:"
-echo "   ✓ Default limits: RAM=1024MB, Disk=10GB, CPU=100%, Servers=1"
-echo "   ✓ 0 = Unlimited (admin only)"
-echo "   ✓ Validation happens on both frontend and backend"
-echo "   ✓ Middleware prevents bypass via API"
+echo "⚠️ IMPORTANT:"
+echo "   • Run: sudo chown -R www-data:www-data ${PTERODACTYL_PATH}"
+echo "   • Clear browser cache after installation"
+echo "   • Test with non-admin account to verify limits"
 echo ""
 echo "=========================================="
 
 if [ $ERROR_COUNT -eq 0 ]; then
-    handle_success "All installations completed successfully!"
-    echo ""
-    echo "🌐 Access Limit Management:"
-    echo "   URL: https://xxx.com/admin/limits"
-    echo "   Required: Login as Admin ID 1"
+    handle_success "All systems protected successfully!"
     exit 0
 else
     handle_error "Installation completed with $ERROR_COUNT error(s)"
