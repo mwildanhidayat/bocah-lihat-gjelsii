@@ -1142,7 +1142,7 @@ fi
 echo ""
 handle_info "[10/12] Adding sidebar menu for admin (safe mode)..."
 
-SIDEBAR_PATH="${PTERODACTYL_PATH}/resources/views/admin/partials/navigation.blade.php"
+SIDEBAR_PATH="${PTERODACTYL_PATH}/resources/views/admin/layouts/sidebar.blade.php"
 
 if [ -f "$SIDEBAR_PATH" ]; then
     cp "$SIDEBAR_PATH" "${SIDEBAR_PATH}.bak_${TIMESTAMP}"
@@ -1275,7 +1275,7 @@ handle_info "Running database migration (safe mode)..."
 cd "${PTERODACTYL_PATH}" || exit 1
 
 # Cek apakah migration user_limits sudah pernah dijalankan
-if php artisan migrate:status | grep -q create_user_limits_table; then
+if mysql -u root -p panel -e "SHOW TABLES LIKE 'user_limits';" | grep -q user_limits; then
     echo "[INFO] user_limits migration already applied, skipping"
 else
     php artisan migrate --path="$MIGRATION_FILE" --force
