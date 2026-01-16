@@ -1098,7 +1098,7 @@ else
 fi
 
 ##############################################################################
-# 9. MODIFY API SERVER CREATION (VALIDATION)
+# 9. MODIFY API SERVER CREATION (VALIDATION) - FIXED VERSION
 ##############################################################################
 echo ""
 handle_info "[9/12] Modifying API ServerController for limits..."
@@ -1106,34 +1106,98 @@ handle_info "[9/12] Modifying API ServerController for limits..."
 API_SERVER_CONTROLLER_PATH="${PTERODACTYL_PATH}/app/Http/Controllers/Api/Application/Servers/ServerController.php"
 if [ -f "$API_SERVER_CONTROLLER_PATH" ]; then
     cp "$API_SERVER_CONTROLLER_PATH" "${API_SERVER_CONTROLLER_PATH}.bak_${TIMESTAMP}"
+    handle_success "Backup created: ${API_SERVER_CONTROLLER_PATH}.bak_${TIMESTAMP}"
     
-    # Add limit check before server creation in API
-    sed -i '/use Pterodactyl\\Models\\Server;/a use Pterodactyl\\Services\\Users\\UserLimitService;' "$API_SERVER_CONTROLLER_PATH"
+    # Create a modified version
+    TEMP_FILE=$(mktemp)
     
-    # Find store method and add validation
-    sed -i '/public function store(StoreServerRequest \$request)/ {
-        a \ \ \ \ \ \ \ \ // Check user limits before creating server
-        a \ \ \ \ \ \ \ \ \$limitService = app(UserLimitService::class);
-        a \ \ \ \ \ \ \ \ \$user = User::findOrFail(\$request->input(\'owner_id\'));
-        a \ \ \ \ \ \ \ \ try {
-        a \ \ \ \ \ \ \ \ \ \ \ \ \$limitService->checkCreateServerLimits(
-        a \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \$user,
-        a \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \$request->input(\'memory\'),
-        a \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \$request->input(\'disk\'),
-        a \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \$request->input(\'cpu\')
-        a \ \ \ \ \ \ \ \ \ \ \ \ );
-        a \ \ \ \ \ \ \ \ } catch (\\Pterodactyl\\Exceptions\\DisplayException \$e) {
-        a \ \ \ \ \ \ \ \ \ \ \ \ throw new \\Illuminate\\Http\\Exceptions\\HttpResponseException(
-        a \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ response()->json([\'error\' => \$e->getMessage()], 400)
-        a \ \ \ \ \ \ \ \ \ \ \ \ );
-        a \ \ \ \ \ \ \ \ }
-    }' "$API_SERVER_CONTROLLER_PATH"
+    # Process the file to add limit check
+    awk '
+    /use Pterodactyl\\\\Models\\\\Server;/ {
+        print $0
+        print "use Pterodactyl\\\\Services\\\\Users\\\\UserLimitService;"
+        next
+    }
     
-    handle_success "API ServerController modified for limit validation"
+    /public function store\(StoreServerRequest \$request\)/ {
+        in_store_method = 1
+        print $0
+        next
+    }
+    
+    in_store_method && /\{/ {
+        brace_count++
+        if (brace_count == 1) {
+            print $0
+            print ""
+            print "        // Check user limits before creating server"
+            print "        \$limitService = app(UserLimitService::class);"
+            print "        \$user = User::findOrFail(\$request->input(\"owner_id\"));"
+            print "        try {"
+            print "            \$limitService->checkCreateServerLimits("
+            print "                \$user,"
+            print "                \$request->input(\"memory\"),"
+            print "                \$request->input(\"disk\"),"
+            print "                \$request->input(\"cpu\")"
+            print "            );"
+            print "        } catch (\\\\Pterodactyl\\\\Exceptions\\\\DisplayException \$e) {"
+            print "            throw new \\\\Illuminate\\\\Http\\\\Exceptions\\\\HttpResponseException("
+            print "                response()->json([\"error\" => \$e->getMessage()], 400)"
+            print "            );"
+            print "        }"
+            next
+        }
+    }
+    
+    in_store_method && /\}/ {
+        brace_count--
+        if (brace_count == 0) {
+            in_store_method = 0
+        }
+    }
+    
+    { print $0 }
+    ' "$API_SERVER_CONTROLLER_PATH" > "$TEMP_FILE"
+    
+    # Check if modification was successful
+    if grep -q "UserLimitService" "$TEMP_FILE"; then
+        mv "$TEMP_FILE" "$API_SERVER_CONTROLLER_PATH"
+        handle_success "API ServerController modified for limit validation"
+    else
+        handle_info "Could not auto-modify API ServerController. Manual modification required."
+        rm -f "$TEMP_FILE"
+        
+        # Provide manual instructions
+        echo ""
+        echo "⚠️  MANUAL MODIFICATION REQUIRED FOR API SERVER CONTROLLER:"
+        echo "=========================================================="
+        echo "File: $API_SERVER_CONTROLLER_PATH"
+        echo ""
+        echo "1. Add this use statement after other use statements:"
+        echo "   use Pterodactyl\\Services\\Users\\UserLimitService;"
+        echo ""
+        echo "2. In the store() method, add this code after validation:"
+        echo "   // Check user limits before creating server"
+        echo "   \$limitService = app(UserLimitService::class);"
+        echo "   \$user = User::findOrFail(\$request->input('owner_id'));"
+        echo "   try {"
+        echo "       \$limitService->checkCreateServerLimits("
+        echo "           \$user,"
+        echo "           \$request->input('memory'),"
+        echo "           \$request->input('disk'),"
+        echo "           \$request->input('cpu')"
+        echo "       );"
+        echo "   } catch (\\Pterodactyl\\Exceptions\\DisplayException \$e) {"
+        echo "       throw new \\Illuminate\\Http\\Exceptions\\HttpResponseException("
+        echo "           response()->json(['error' => \$e->getMessage()], 400)"
+        echo "       );"
+        echo "   }"
+        echo ""
+    fi
 else
-    handle_info "API ServerController not found, skipping modification"
+    handle_info "API ServerController not found at: $API_SERVER_CONTROLLER_PATH"
+    handle_info "Skipping API modification - limit validation will use middleware only"
 fi
-
 ##############################################################################
 # 10. ADD SIDEBAR MENU FOR ADMIN
 ##############################################################################
