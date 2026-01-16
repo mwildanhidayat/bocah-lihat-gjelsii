@@ -1,18 +1,18 @@
 #!/bin/bash
 
 ##############################################################################
-# INSTALLER PROTEKSI PTERODACTYL - VERSI 2.0 LENGKAP AMAN (FULL FIX)
-# Date: 2026-01-14
+# INSTALLER PROTEKSI PTERODACTYL - VERSI 3.0 DENGAN LIMIT & UI ADMIN
+# Date: 2026-01-17
 # Author: Safety Team
-# Description: Proteksi Admin ID 1 - Tanpa 500 Error, White Screen, atau Bug
-# Fix: User 500 Error + Custom 403 Messages
+# Description: Proteksi Admin ID 1 + Limit User + UI Admin
+# Fitur: Limit RAM/Disk/CPU ≠ 0 + Custom 403 Page + UI Admin
 ##############################################################################
 
 set -e
 
 echo ""
 echo "=========================================="
-echo "🔐 PTERODACTYL PROTECTION INSTALLER v2.0"
+echo "🔐 PTERODACTYL PROTECTION INSTALLER v3.0"
 echo "=========================================="
 echo ""
 
@@ -43,115 +43,302 @@ handle_info() {
 }
 
 ##############################################################################
-# 1. ServerDeletionService. php
+# 0. CREATE LIMIT DATABASE MIGRATION
 ##############################################################################
 echo ""
-handle_info "[1/9] Installing ServerDeletionService.php..."
+handle_info "[0/12] Creating user_limits table migration..."
 
-REMOTE_PATH="${PTERODACTYL_PATH}/app/Services/Servers/ServerDeletionService.php"
-BACKUP_PATH="${REMOTE_PATH}.bak_${TIMESTAMP}"
+MIGRATION_PATH="${PTERODACTYL_PATH}/database/migrations"
+MIGRATION_FILE="${MIGRATION_PATH}/$(date +%Y_%m_%d_%H%M%S)_create_user_limits_table.php"
 
-if [ -f "$REMOTE_PATH" ]; then
-    cp "$REMOTE_PATH" "$BACKUP_PATH"
-    handle_success "Backup created:  $BACKUP_PATH"
-fi
+mkdir -p "$MIGRATION_PATH"
 
-mkdir -p "$(dirname "$REMOTE_PATH")"
-
-cat > "$REMOTE_PATH" << 'PHPEOF'
+cat > "$MIGRATION_FILE" << 'PHPEOF'
 <?php
 
-namespace Pterodactyl\Services\Servers;
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
 
-use Illuminate\Support\Facades\Auth;
-use Pterodactyl\Exceptions\DisplayException;
-use Illuminate\Http\Response;
-use Pterodactyl\Models\Server;
-use Illuminate\Support\Facades\Log;
-use Illuminate\Database\ConnectionInterface;
-use Pterodactyl\Repositories\Wings\DaemonServerRepository;
-use Pterodactyl\Services\Databases\DatabaseManagementService;
-use Pterodactyl\Exceptions\Http\Connection\DaemonConnectionException;
-
-class ServerDeletionService
+return new class extends Migration
 {
-    protected bool $force = false;
-
-    public function __construct(
-        private ConnectionInterface $connection,
-        private DaemonServerRepository $daemonServerRepository,
-        private DatabaseManagementService $databaseManagementService
-    ) {
-    }
-
-    public function withForce(bool $bool = true): self
+    public function up(): void
     {
-        $this->force = $bool;
-        return $this;
-    }
+        Schema::create('user_limits', function (Blueprint $table) {
+            $table->id();
+            $table->unsignedBigInteger('user_id')->unique();
+            $table->integer('max_ram')->default(0)->comment('Maximum RAM in MB');
+            $table->integer('max_disk')->default(0)->comment('Maximum Disk in MB');
+            $table->integer('max_cpu')->default(0)->comment('Maximum CPU in %');
+            $table->integer('max_servers')->default(0)->comment('Maximum servers count');
+            $table->timestamps();
 
-    /**
-     * Delete a server from the panel and remove any associated databases. 
-     * @throws \Throwable
-     */
-    public function handle(Server $server): void
-    {
-        $user = Auth::user();
-
-        if ($user && $user->id !== 1) {
-            $ownerId = $server->owner_id ??  $server->user_id;
-            if ($ownerId && $ownerId !== $user->id) {
-                abort(403);
-            }
-        }
-
-        try {
-            $this->daemonServerRepository->setServer($server)->delete();
-        } catch (DaemonConnectionException $exception) {
-            if (! $this->force && $exception->getStatusCode() !== Response::HTTP_NOT_FOUND) {
-                throw $exception;
-            }
-            Log::warning($exception);
-        }
-
-        $this->connection->transaction(function () use ($server) {
-            foreach ($server->databases as $database) {
-                try {
-                    $this->databaseManagementService->delete($database);
-                } catch (\Exception $exception) {
-                    if (!$this->force) {
-                        throw $exception;
-                    }
-                    $database->delete();
-                    Log:: warning($exception);
-                }
-            }
-            $server->delete();
+            $table->foreign('user_id')->references('id')->on('users')->onDelete('cascade');
         });
+
+        // Insert default limit for admin (unlimited)
+        DB::table('user_limits')->insert([
+            'user_id' => 1,
+            'max_ram' => 0, // 0 = unlimited
+            'max_disk' => 0,
+            'max_cpu' => 0,
+            'max_servers' => 0,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+    }
+
+    public function down(): void
+    {
+        Schema::dropIfExists('user_limits');
+    }
+};
+PHPEOF
+
+handle_success "Migration created: $(basename $MIGRATION_FILE)"
+
+##############################################################################
+# 1. CREATE USER LIMIT MODEL
+##############################################################################
+echo ""
+handle_info "[1/12] Creating UserLimit model..."
+
+MODEL_PATH="${PTERODACTYL_PATH}/app/Models/UserLimit.php"
+mkdir -p "$(dirname "$MODEL_PATH")"
+
+cat > "$MODEL_PATH" << 'PHPEOF'
+<?php
+
+namespace Pterodactyl\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class UserLimit extends Model
+{
+    protected $table = 'user_limits';
+
+    protected $fillable = [
+        'user_id',
+        'max_ram',
+        'max_disk',
+        'max_cpu',
+        'max_servers',
+    ];
+
+    protected $casts = [
+        'max_ram' => 'integer',
+        'max_disk' => 'integer',
+        'max_cpu' => 'integer',
+        'max_servers' => 'integer',
+    ];
+
+    public function user()
+    {
+        return $this->belongsTo(User::class);
+    }
+
+    public static function getLimit($userId)
+    {
+        return self::firstOrCreate(
+            ['user_id' => $userId],
+            [
+                'max_ram' => 1024,
+                'max_disk' => 10240,
+                'max_cpu' => 100,
+                'max_servers' => 1,
+            ]
+        );
+    }
+
+    public function isUnlimited($field = null)
+    {
+        if ($field) {
+            return $this->$field === 0;
+        }
+        return $this->max_ram === 0 && $this->max_disk === 0 && $this->max_cpu === 0 && $this->max_servers === 0;
+    }
+
+    public function checkLimit($ram, $disk, $cpu, $currentServers = 0)
+    {
+        $errors = [];
+
+        if (!$this->isUnlimited('max_ram') && $ram > $this->max_ram) {
+            $errors[] = "RAM melebihi batas. Maksimal: {$this->max_ram} MB";
+        }
+
+        if (!$this->isUnlimited('max_disk') && $disk > $this->max_disk) {
+            $errors[] = "Disk melebihi batas. Maksimal: {$this->max_disk} MB";
+        }
+
+        if (!$this->isUnlimited('max_cpu') && $cpu > $this->max_cpu) {
+            $errors[] = "CPU melebihi batas. Maksimal: {$this->max_cpu}%";
+        }
+
+        if (!$this->isUnlimited('max_servers') && $currentServers >= $this->max_servers) {
+            $errors[] = "Jumlah server melebihi batas. Maksimal: {$this->max_servers} server";
+        }
+
+        return $errors;
     }
 }
 PHPEOF
 
-chmod 644 "$REMOTE_PATH"
-handle_success "ServerDeletionService.php installed"
+chmod 644 "$MODEL_PATH"
+handle_success "UserLimit model created"
 
 ##############################################################################
-# 2. UserController.php (FIXED - NO 500 ERROR)
+# 2. CREATE USER LIMIT SERVICE
 ##############################################################################
 echo ""
-handle_info "[2/9] Installing UserController.php (FIXED)..."
+handle_info "[2/12] Creating UserLimitService..."
 
-REMOTE_PATH="${PTERODACTYL_PATH}/app/Http/Controllers/Admin/UserController.php"
-BACKUP_PATH="${REMOTE_PATH}.bak_${TIMESTAMP}"
+SERVICE_PATH="${PTERODACTYL_PATH}/app/Services/Users/UserLimitService.php"
+mkdir -p "$(dirname "$SERVICE_PATH")"
 
-if [ -f "$REMOTE_PATH" ]; then
-    cp "$REMOTE_PATH" "$BACKUP_PATH"
+cat > "$SERVICE_PATH" << 'PHPEOF'
+<?php
+
+namespace Pterodactyl\Services\Users;
+
+use Pterodactyl\Models\User;
+use Pterodactyl\Models\UserLimit;
+use Illuminate\Support\Facades\DB;
+use Pterodactyl\Exceptions\DisplayException;
+
+class UserLimitService
+{
+    public function checkCreateServerLimits(User $user, $ram, $disk, $cpu)
+    {
+        if ($user->id === 1) {
+            return; // Admin tidak dibatasi
+        }
+
+        // Dapatkan limit user
+        $limit = UserLimit::getLimit($user->id);
+
+        // Hitung server saat ini
+        $currentServers = $user->servers()->count();
+
+        // Check limits
+        $errors = $limit->checkLimit($ram, $disk, $cpu, $currentServers);
+
+        if (!empty($errors)) {
+            throw new DisplayException(
+                'Batas pembuatan server terlampaui: ' . implode(', ', $errors)
+            );
+        }
+
+        // Pastikan RAM, Disk, CPU tidak 0
+        if ($ram <= 0) {
+            throw new DisplayException('RAM tidak boleh 0 atau negatif');
+        }
+
+        if ($disk <= 0) {
+            throw new DisplayException('Disk tidak boleh 0 atau negatif');
+        }
+
+        if ($cpu <= 0) {
+            throw new DisplayException('CPU tidak boleh 0 atau negatif');
+        }
+    }
+
+    public function updateLimits($userId, $data)
+    {
+        if ($userId === 1) {
+            throw new DisplayException('Tidak dapat mengubah limit untuk Admin ID 1');
+        }
+
+        return DB::transaction(function () use ($userId, $data) {
+            $limit = UserLimit::firstOrNew(['user_id' => $userId]);
+            
+            // Validasi input
+            $ram = (int)($data['max_ram'] ?? 0);
+            $disk = (int)($data['max_disk'] ?? 0);
+            $cpu = (int)($data['max_cpu'] ?? 0);
+            $servers = (int)($data['max_servers'] ?? 0);
+
+            if ($ram < 0 || $disk < 0 || $cpu < 0 || $servers < 0) {
+                throw new DisplayException('Nilai limit tidak boleh negatif');
+            }
+
+            $limit->max_ram = $ram;
+            $limit->max_disk = $disk;
+            $limit->max_cpu = $cpu;
+            $limit->max_servers = $servers;
+            $limit->save();
+
+            return $limit;
+        });
+    }
+
+    public function getLimits($userId)
+    {
+        return UserLimit::getLimit($userId);
+    }
+
+    public function resetToDefaults($userId)
+    {
+        if ($userId === 1) {
+            throw new DisplayException('Tidak dapat mereset limit untuk Admin ID 1');
+        }
+
+        $limit = UserLimit::getLimit($userId);
+        $limit->max_ram = 1024;
+        $limit->max_disk = 10240;
+        $limit->max_cpu = 100;
+        $limit->max_servers = 1;
+        $limit->save();
+
+        return $limit;
+    }
+}
+PHPEOF
+
+chmod 644 "$SERVICE_PATH"
+handle_success "UserLimitService created"
+
+##############################################################################
+# 3. MODIFY SERVER CREATION SERVICE (VALIDATION)
+##############################################################################
+echo ""
+handle_info "[3/12] Modifying ServerCreationService for limits..."
+
+CREATION_SERVICE_PATH="${PTERODACTYL_PATH}/app/Services/Servers/ServerCreationService.php"
+BACKUP_PATH="${CREATION_SERVICE_PATH}.bak_${TIMESTAMP}"
+
+if [ -f "$CREATION_SERVICE_PATH" ]; then
+    cp "$CREATION_SERVICE_PATH" "$BACKUP_PATH"
     handle_success "Backup created: $BACKUP_PATH"
+    
+    # Inject limit check into existing file
+    sed -i '/use Pterodactyl\\Models\\Server;/a use Pterodactyl\\Services\\Users\\UserLimitService;' "$CREATION_SERVICE_PATH"
+    sed -i '/__construct(/a\ \ \ \ \ \ \ \ private UserLimitService \$limitService,' "$CREATION_SERVICE_PATH"
+    
+    # Find where validation occurs and add limit check
+    sed -i '/Validate the data and ensure no errors are present/ {
+        n
+        a \ \ \ \ \ \ \ \ \ \ \ \ // Check user limits
+        a \ \ \ \ \ \ \ \ \ \ \ \ if ($data[\'owner_id\'] !== 1) {
+        a \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ $user = User::findOrFail($data[\'owner_id\']);
+        a \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ $this->limitService->checkCreateServerLimits($user, $data[\'memory\'], $data[\'disk\'], $data[\'cpu\']);
+        a \ \ \ \ \ \ \ \ \ \ \ \ }
+    }' "$CREATION_SERVICE_PATH"
+    
+    handle_success "ServerCreationService modified for limit validation"
+else
+    handle_info "ServerCreationService.php not found, skipping modification"
 fi
 
-mkdir -p "$(dirname "$REMOTE_PATH")"
+##############################################################################
+# 4. CREATE ADMIN LIMIT CONTROLLER
+##############################################################################
+echo ""
+handle_info "[4/12] Creating Admin LimitController..."
 
-cat > "$REMOTE_PATH" << 'PHPEOF'
+LIMIT_CONTROLLER_PATH="${PTERODACTYL_PATH}/app/Http/Controllers/Admin/LimitController.php"
+mkdir -p "$(dirname "$LIMIT_CONTROLLER_PATH")"
+
+cat > "$LIMIT_CONTROLLER_PATH" << 'PHPEOF'
 <?php
 
 namespace Pterodactyl\Http\Controllers\Admin;
@@ -159,864 +346,923 @@ namespace Pterodactyl\Http\Controllers\Admin;
 use Illuminate\View\View;
 use Illuminate\Http\Request;
 use Pterodactyl\Models\User;
-use Pterodactyl\Models\Model;
-use Illuminate\Support\Collection;
+use Pterodactyl\Models\UserLimit;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Support\Facades\Auth;
 use Prologue\Alerts\AlertsMessageBag;
-use Spatie\QueryBuilder\QueryBuilder;
-use Illuminate\View\Factory as ViewFactory;
 use Pterodactyl\Exceptions\DisplayException;
 use Pterodactyl\Http\Controllers\Controller;
-use Illuminate\Contracts\Translation\Translator;
-use Pterodactyl\Services\Users\UserUpdateService;
-use Pterodactyl\Traits\Helpers\AvailableLanguages;
-use Pterodactyl\Services\Users\UserCreationService;
-use Pterodactyl\Services\Users\UserDeletionService;
-use Pterodactyl\Http\Requests\Admin\UserFormRequest;
-use Pterodactyl\Http\Requests\Admin\NewUserFormRequest;
-use Pterodactyl\Contracts\Repository\UserRepositoryInterface;
+use Pterodactyl\Services\Users\UserLimitService;
+use Pterodactyl\Http\Requests\Admin\UpdateUserLimitRequest;
 
-class UserController extends Controller
+class LimitController extends Controller
 {
-    use AvailableLanguages;
-
     public function __construct(
-        protected AlertsMessageBag $alert,
-        protected UserCreationService $creationService,
-        protected UserDeletionService $deletionService,
-        protected Translator $translator,
-        protected UserUpdateService $updateService,
-        protected UserRepositoryInterface $repository,
-        protected ViewFactory $view
-    ) {
-    }
+        private AlertsMessageBag $alert,
+        private UserLimitService $limitService
+    ) {}
 
     public function index(Request $request): View
     {
-        $users = QueryBuilder::for(
-            User::query()->select('users.*')
-                ->selectRaw('COUNT(DISTINCT(subusers.id)) as subuser_of_count')
-                ->selectRaw('COUNT(DISTINCT(servers.id)) as servers_count')
-                ->leftJoin('subusers', 'subusers.user_id', '=', 'users.id')
-                ->leftJoin('servers', 'servers.owner_id', '=', 'users.id')
-                ->groupBy('users.id')
-        )
-            ->allowedFilters(['username', 'email', 'uuid'])
-            ->allowedSorts(['id', 'uuid'])
-            ->paginate(50);
+        // Only admin ID 1 can access
+        if ($request->user()->id !== 1) {
+            abort(403, '⚠️ ᴀᴋꜱᴇꜱ ᴅɪᴛᴏʟᴀᴋ: ʜᴀɴʏᴀ ᴀᴅᴍɪɴ ᴜᴛᴀᴍᴀ ʏᴀɴɢ ʙɪꜱᴀ ᴀᴋꜱᴇꜱ');
+        }
 
-        return $this->view->make('admin.users.index', ['users' => $users]);
+        $users = User::where('id', '!=', 1)
+            ->with('limit')
+            ->paginate(20);
+
+        return view('admin.limits.index', compact('users'));
     }
 
-    public function create(): View
-    {
-        return $this->view->make('admin.users.new', [
-            'languages' => $this->getAvailableLanguages(true),
-        ]);
-    }
-
-    public function view(User $user): View
-    {
-        return $this->view->make('admin.users.view', [
-            'user' => $user,
-            'languages' => $this->getAvailableLanguages(true),
-        ]);
-    }
-
-    public function delete(Request $request, User $user): RedirectResponse
+    public function view(Request $request, User $user): View
     {
         if ($request->user()->id !== 1) {
-            abort(403);
+            abort(403, '⚠️ ᴀᴋꜱᴇꜱ ᴅɪᴛᴏʟᴀᴋ: ʜᴀɴʏᴀ ᴀᴅᴍɪɴ ᴜᴛᴀᴍᴀ ʏᴀɴɢ ʙɪꜱᴀ ᴀᴋꜱᴇꜱ');
         }
 
-        if ($request->user()->id === $user->id) {
-            throw new DisplayException($this->translator->get('admin/user. exceptions.user_has_servers'));
+        if ($user->id === 1) {
+            $this->alert->warning('Admin utama memiliki akses tak terbatas.')->flash();
+            return redirect()->route('admin.limits');
         }
 
-        $this->deletionService->handle($user);
-        return redirect()->route('admin.users');
+        $limit = $this->limitService->getLimits($user->id);
+        return view('admin.limits.view', compact('user', 'limit'));
     }
 
-    public function store(NewUserFormRequest $request): RedirectResponse
-    {
-        $user = $this->creationService->handle($request->normalize());
-        $this->alert->success($this->translator->get('admin/user.notices.account_created'))->flash();
-        return redirect()->route('admin.users.view', $user->id);
-    }
-
-    public function update(UserFormRequest $request, User $user): RedirectResponse
+    public function update(UpdateUserLimitRequest $request, User $user): RedirectResponse
     {
         if ($request->user()->id !== 1) {
-            $restrictedFields = ['email', 'first_name', 'last_name', 'password'];
-            foreach ($restrictedFields as $field) {
-                if ($request->filled($field)) {
-                    abort(403);
-                }
-            }
-        }
-
-        $this->updateService
-            ->setUserLevel(User::USER_LEVEL_ADMIN)
-            ->handle($user, $request->normalize());
-
-        $this->alert->success(trans('admin/user.notices.account_updated'))->flash();
-        return redirect()->route('admin.users.view', $user->id);
-    }
-
-    public function json(Request $request): Model|Collection
-    {
-        $users = QueryBuilder::for(User::query())->allowedFilters(['email'])->paginate(25);
-
-        if ($request->query('user_id')) {
-            $user = User::query()->findOrFail($request->input('user_id'));
-            $user->md5 = md5(strtolower($user->email));
-            return $user;
-        }
-
-        return $users->map(function ($item) {
-            $item->md5 = md5(strtolower($item->email));
-            return $item;
-        });
-    }
-}
-PHPEOF
-
-chmod 644 "$REMOTE_PATH"
-handle_success "UserController.php installed (FIXED)"
-
-##############################################################################
-# 3. LocationController.php
-##############################################################################
-echo ""
-handle_info "[3/9] Installing LocationController.php..."
-
-REMOTE_PATH="${PTERODACTYL_PATH}/app/Http/Controllers/Admin/LocationController.php"
-BACKUP_PATH="${REMOTE_PATH}.bak_${TIMESTAMP}"
-
-if [ -f "$REMOTE_PATH" ]; then
-    cp "$REMOTE_PATH" "$BACKUP_PATH"
-    handle_success "Backup created: $BACKUP_PATH"
-fi
-
-mkdir -p "$(dirname "$REMOTE_PATH")"
-
-cat > "$REMOTE_PATH" << 'PHPEOF'
-<?php
-
-namespace Pterodactyl\Http\Controllers\Admin;
-
-use Illuminate\View\View;
-use Illuminate\Http\RedirectResponse;
-use Illuminate\Support\Facades\Auth;
-use Pterodactyl\Models\Location;
-use Prologue\Alerts\AlertsMessageBag;
-use Illuminate\View\Factory as ViewFactory;
-use Pterodactyl\Exceptions\DisplayException;
-use Pterodactyl\Http\Controllers\Controller;
-use Pterodactyl\Http\Requests\Admin\LocationFormRequest;
-use Pterodactyl\Services\Locations\LocationUpdateService;
-use Pterodactyl\Services\Locations\LocationCreationService;
-use Pterodactyl\Services\Locations\LocationDeletionService;
-use Pterodactyl\Contracts\Repository\LocationRepositoryInterface;
-
-class LocationController extends Controller
-{
-    public function __construct(
-        protected AlertsMessageBag $alert,
-        protected LocationCreationService $creationService,
-        protected LocationDeletionService $deletionService,
-        protected LocationRepositoryInterface $repository,
-        protected LocationUpdateService $updateService,
-        protected ViewFactory $view
-    ) {
-    }
-
-    public function index(): View
-    {
-        if (Auth::user()->id !== 1) {
-            abort(403, '⚠️ ᴀᴋꜱᴇꜱ ᴅɪᴛᴏʟᴀᴋ: ʜᴀɴʏᴀ ᴛᴀᴄᴏ ʏᴀɴɢ ʙɪꜱᴀ ᴀᴋꜱᴇꜱ');
-        }
-
-        return $this->view->make('admin.locations.index', [
-            'locations' => $this->repository->getAllWithDetails(),
-        ]);
-    }
-
-    public function view(int $id): View
-    {
-        if (Auth::user()->id !== 1) {
-            abort(403, '⚠️ ᴀᴋꜱᴇꜱ ᴅɪᴛᴏʟᴀᴋ: ʜᴀɴʏᴀ ᴛᴀᴄᴏ ʏᴀɴɢ ʙɪꜱᴀ ᴀᴋꜱᴇꜱ');
-        }
-
-        return $this->view->make('admin.locations.view', [
-            'location' => $this->repository->getWithNodes($id),
-        ]);
-    }
-
-    public function create(LocationFormRequest $request): RedirectResponse
-    {
-        if ($request->user()->id !== 1) {
-            abort(403, '⚠️ ᴀᴋꜱᴇꜱ ᴅɪᴛᴏʟᴀᴋ: ʜᴀɴʏᴀ ᴛᴀᴄᴏ ʏᴀɴɢ ʙɪꜱᴀ ᴀᴋꜱᴇꜱ');
-        }
-
-        $location = $this->creationService->handle($request->normalize());
-        $this->alert->success('Location was created successfully. ')->flash();
-        return redirect()->route('admin.locations.view', $location->id);
-    }
-
-    public function update(LocationFormRequest $request, Location $location): RedirectResponse
-    {
-        if ($request->user()->id !== 1) {
-            abort(403, '⚠️ ᴀᴋꜱᴇꜱ ᴅɪᴛᴏʟᴀᴋ: ʜᴀɴʏᴀ ᴛᴀᴄᴏ ʏᴀɴɢ ʙɪꜱᴀ ᴀᴋꜱᴇꜱ');
-        }
-
-        if ($request->input('action') === 'delete') {
-            return $this->delete($location);
-        }
-
-        $this->updateService->handle($location->id, $request->normalize());
-        $this->alert->success('Location was updated successfully.')->flash();
-        return redirect()->route('admin.locations.view', $location->id);
-    }
-
-    public function delete(Location $location): RedirectResponse
-    {
-        if (Auth::user()->id !== 1) {
-            abort(403, '⚠️ ᴀᴋꜱᴇꜱ ᴅɪᴛᴏʟᴀᴋ: ʜᴀɴʏᴀ ᴛᴀᴄᴏ ʏᴀɴɢ ʙɪꜱᴀ ᴀᴋꜱᴇꜱ');
+            abort(403, '⚠️ ᴀᴋꜱᴇꜱ ᴅɪᴛᴏʟᴀᴋ: ʜᴀɴʏᴀ ᴀᴅᴍɪɴ ᴜᴛᴀᴍᴀ ʏᴀɴɢ ʙɪꜱᴀ ᴀᴋꜱᴇꜱ');
         }
 
         try {
-            $this->deletionService->handle($location->id);
-            return redirect()->route('admin.locations');
-        } catch (DisplayException $ex) {
-            $this->alert->danger($ex->getMessage())->flash();
+            $this->limitService->updateLimits($user->id, $request->validated());
+            $this->alert->success('Limit pengguna berhasil diperbarui.')->flash();
+        } catch (DisplayException $e) {
+            $this->alert->danger($e->getMessage())->flash();
         }
 
-        return redirect()->route('admin.locations. view', $location->id);
-    }
-}
-PHPEOF
-
-chmod 644 "$REMOTE_PATH"
-handle_success "LocationController. php installed"
-
-##############################################################################
-# 4. NodeController.php
-##############################################################################
-echo ""
-handle_info "[4/9] Installing NodeController.php..."
-
-REMOTE_PATH="${PTERODACTYL_PATH}/app/Http/Controllers/Admin/Nodes/NodeController.php"
-BACKUP_PATH="${REMOTE_PATH}.bak_${TIMESTAMP}"
-
-if [ -f "$REMOTE_PATH" ]; then
-    cp "$REMOTE_PATH" "$BACKUP_PATH"
-    handle_success "Backup created:  $BACKUP_PATH"
-fi
-
-mkdir -p "$(dirname "$REMOTE_PATH")"
-
-cat > "$REMOTE_PATH" << 'PHPEOF'
-<?php
-
-namespace Pterodactyl\Http\Controllers\Admin\Nodes;
-
-use Illuminate\View\View;
-use Illuminate\Http\Request;
-use Pterodactyl\Models\Node;
-use Illuminate\Support\Facades\Auth;
-use Spatie\QueryBuilder\QueryBuilder;
-use Pterodactyl\Http\Controllers\Controller;
-use Illuminate\Contracts\View\Factory as ViewFactory;
-
-class NodeController extends Controller
-{
-    public function __construct(private ViewFactory $view)
-    {
+        return redirect()->route('admin.limits.view', $user->id);
     }
 
-    public function index(Request $request): View
-    {
-        if (Auth::user()->id !== 1) {
-            abort(403, '⚠️ ᴀᴋꜱᴇꜱ ᴅɪᴛᴏʟᴀᴋ: ʜᴀɴʏᴀ ᴛᴀᴄᴏ ʏᴀɴɢ ʙɪꜱᴀ ᴀᴋꜱᴇꜱ');
-        }
-
-        $nodes = QueryBuilder::for(
-            Node::query()->with('location')->withCount('servers')
-        )
-            ->allowedFilters(['uuid', 'name'])
-            ->allowedSorts(['id'])
-            ->paginate(25);
-
-        return $this->view->make('admin.nodes.index', ['nodes' => $nodes]);
-    }
-}
-PHPEOF
-
-chmod 644 "$REMOTE_PATH"
-handle_success "NodeController. php installed"
-
-##############################################################################
-# 5. NestController.php
-##############################################################################
-echo ""
-handle_info "[5/9] Installing NestController.php..."
-
-REMOTE_PATH="${PTERODACTYL_PATH}/app/Http/Controllers/Admin/Nests/NestController.php"
-BACKUP_PATH="${REMOTE_PATH}.bak_${TIMESTAMP}"
-
-if [ -f "$REMOTE_PATH" ]; then
-    cp "$REMOTE_PATH" "$BACKUP_PATH"
-    handle_success "Backup created: $BACKUP_PATH"
-fi
-
-mkdir -p "$(dirname "$REMOTE_PATH")"
-
-cat > "$REMOTE_PATH" << 'PHPEOF'
-<?php
-
-namespace Pterodactyl\Http\Controllers\Admin\Nests;
-
-use Illuminate\View\View;
-use Illuminate\Http\RedirectResponse;
-use Illuminate\Support\Facades\Auth;
-use Prologue\Alerts\AlertsMessageBag;
-use Illuminate\View\Factory as ViewFactory;
-use Pterodactyl\Http\Controllers\Controller;
-use Pterodactyl\Services\Nests\NestUpdateService;
-use Pterodactyl\Services\Nests\NestCreationService;
-use Pterodactyl\Services\Nests\NestDeletionService;
-use Pterodactyl\Contracts\Repository\NestRepositoryInterface;
-use Pterodactyl\Http\Requests\Admin\Nest\StoreNestFormRequest;
-
-class NestController extends Controller
-{
-    public function __construct(
-        protected AlertsMessageBag $alert,
-        protected NestCreationService $nestCreationService,
-        protected NestDeletionService $nestDeletionService,
-        protected NestRepositoryInterface $repository,
-        protected NestUpdateService $nestUpdateService,
-        protected ViewFactory $view
-    ) {
-    }
-
-    public function index(): View
-    {
-        if (Auth::user()->id !== 1) {
-            abort(403, '⚠️ ᴀᴋꜱᴇꜱ ᴅɪᴛᴏʟᴀᴋ: ʜᴀɴʏᴀ ᴛᴀᴄᴏ ʏᴀɴɢ ʙɪꜱᴀ ᴀᴋꜱᴇꜱ');
-        }
-
-        return $this->view->make('admin.nests.index', [
-            'nests' => $this->repository->getWithCounts(),
-        ]);
-    }
-
-    public function create(): View
-    {
-        return $this->view->make('admin.nests.new');
-    }
-
-    public function store(StoreNestFormRequest $request): RedirectResponse
-    {
-        $nest = $this->nestCreationService->handle($request->normalize());
-        $this->alert->success(trans('admin/nests.notices.created', ['name' => htmlspecialchars($nest->name)]))->flash();
-        return redirect()->route('admin.nests.view', $nest->id);
-    }
-
-    public function view(int $nest): View
-    {
-        return $this->view->make('admin.nests.view', [
-            'nest' => $this->repository->getWithEggServers($nest),
-        ]);
-    }
-
-    public function update(StoreNestFormRequest $request, int $nest): RedirectResponse
-    {
-        $this->nestUpdateService->handle($nest, $request->normalize());
-        $this->alert->success(trans('admin/nests.notices.updated'))->flash();
-        return redirect()->route('admin.nests.view', $nest);
-    }
-
-    public function destroy(int $nest): RedirectResponse
-    {
-        $this->nestDeletionService->handle($nest);
-        $this->alert->success(trans('admin/nests.notices.deleted'))->flash();
-        return redirect()->route('admin.nests');
-    }
-}
-PHPEOF
-
-chmod 644 "$REMOTE_PATH"
-handle_success "NestController.php installed"
-
-##############################################################################
-# 6. Settings IndexController.php
-##############################################################################
-echo ""
-handle_info "[6/9] Installing Settings IndexController. php..."
-
-REMOTE_PATH="${PTERODACTYL_PATH}/app/Http/Controllers/Admin/Settings/IndexController.php"
-BACKUP_PATH="${REMOTE_PATH}.bak_${TIMESTAMP}"
-
-if [ -f "$REMOTE_PATH" ]; then
-    cp "$REMOTE_PATH" "$BACKUP_PATH"
-    handle_success "Backup created: $BACKUP_PATH"
-fi
-
-mkdir -p "$(dirname "$REMOTE_PATH")"
-
-cat > "$REMOTE_PATH" << 'PHPEOF'
-<?php
-
-namespace Pterodactyl\Http\Controllers\Admin\Settings;
-
-use Illuminate\View\View;
-use Illuminate\Http\RedirectResponse;
-use Illuminate\Support\Facades\Auth;
-use Prologue\Alerts\AlertsMessageBag;
-use Illuminate\Contracts\Console\Kernel;
-use Illuminate\View\Factory as ViewFactory;
-use Pterodactyl\Http\Controllers\Controller;
-use Pterodactyl\Traits\Helpers\AvailableLanguages;
-use Pterodactyl\Services\Helpers\SoftwareVersionService;
-use Pterodactyl\Contracts\Repository\SettingsRepositoryInterface;
-use Pterodactyl\Http\Requests\Admin\Settings\BaseSettingsFormRequest;
-
-class IndexController extends Controller
-{
-    use AvailableLanguages;
-
-    public function __construct(
-        private AlertsMessageBag $alert,
-        private Kernel $kernel,
-        private SettingsRepositoryInterface $settings,
-        private SoftwareVersionService $versionService,
-        private ViewFactory $view
-    ) {
-    }
-
-    public function index(): View
-    {
-        if (Auth::user()->id !== 1) {
-            abort(403, '⚠️ ᴀᴋꜱᴇꜱ ᴅɪᴛᴏʟᴀᴋ: ʜᴀɴʏᴀ ᴛᴀᴄᴏ ʏᴀɴɢ ʙɪꜱᴀ ᴀᴋꜱᴇꜱ');
-        }
-
-        return $this->view->make('admin.settings.index', [
-            'version' => $this->versionService,
-            'languages' => $this->getAvailableLanguages(true),
-        ]);
-    }
-
-    public function update(BaseSettingsFormRequest $request): RedirectResponse
+    public function reset(Request $request, User $user): RedirectResponse
     {
         if ($request->user()->id !== 1) {
-            abort(403, '⚠️ ᴀᴋꜱᴇꜱ ᴅɪᴛᴏʟᴀᴋ: ʜᴀɴʏᴀ ᴛᴀᴄᴏ ʏᴀɴɢ ʙɪꜱᴀ ᴀᴋꜱᴇꜱ');
+            abort(403, '⚠️ ᴀᴋꜱᴇꜱ ᴅɪᴛᴏʟᴀᴋ: ʜᴀɴʏᴀ ᴀᴅᴍɪɴ ᴜᴛᴀᴍᴀ ʏᴀɴɢ ʙɪꜱᴀ ᴀᴋꜱᴇꜱ');
         }
 
-        foreach ($request->normalize() as $key => $value) {
-            $this->settings->set('settings:: ' . $key, $value);
+        try {
+            $this->limitService->resetToDefaults($user->id);
+            $this->alert->success('Limit berhasil direset ke nilai default.')->flash();
+        } catch (DisplayException $e) {
+            $this->alert->danger($e->getMessage())->flash();
         }
 
-        $this->kernel->call('queue: restart');
-        $this->alert->success(
-            'Panel settings have been updated successfully and the queue worker was restarted to apply these changes.'
-        )->flash();
+        return redirect()->route('admin.limits.view', $user->id);
+    }
 
-        return redirect()->route('admin.settings');
+    public function getLimitsApi(Request $request, User $user): JsonResponse
+    {
+        if ($request->user()->id !== 1) {
+            return response()->json(['error' => 'Unauthorized'], 403);
+        }
+
+        $limit = $this->limitService->getLimits($user->id);
+        return response()->json($limit);
+    }
+
+    public function checkUserLimit(Request $request): JsonResponse
+    {
+        $userId = $request->input('user_id');
+        $ram = (int)$request->input('ram');
+        $disk = (int)$request->input('disk');
+        $cpu = (int)$request->input('cpu');
+
+        if ($userId === 1) {
+            return response()->json(['allowed' => true]);
+        }
+
+        try {
+            $user = User::findOrFail($userId);
+            $this->limitService->checkCreateServerLimits($user, $ram, $disk, $cpu);
+            return response()->json(['allowed' => true]);
+        } catch (DisplayException $e) {
+            return response()->json([
+                'allowed' => false,
+                'message' => $e->getMessage()
+            ], 400);
+        }
     }
 }
 PHPEOF
 
-chmod 644 "$REMOTE_PATH"
-handle_success "Settings IndexController.php installed"
+chmod 644 "$LIMIT_CONTROLLER_PATH"
+handle_success "LimitController created"
 
 ##############################################################################
-# 7. FileController.php
+# 5. CREATE LIMIT REQUEST FORM
 ##############################################################################
 echo ""
-handle_info "[7/9] Installing Client FileController.php..."
+handle_info "[5/12] Creating UpdateUserLimitRequest..."
 
-REMOTE_PATH="${PTERODACTYL_PATH}/app/Http/Controllers/Api/Client/Servers/FileController.php"
-BACKUP_PATH="${REMOTE_PATH}.bak_${TIMESTAMP}"
+REQUEST_PATH="${PTERODACTYL_PATH}/app/Http/Requests/Admin/UpdateUserLimitRequest.php"
+mkdir -p "$(dirname "$REQUEST_PATH")"
 
-if [ -f "$REMOTE_PATH" ]; then
-    cp "$REMOTE_PATH" "$BACKUP_PATH"
-    handle_success "Backup created:  $BACKUP_PATH"
-fi
-
-mkdir -p "$(dirname "$REMOTE_PATH")"
-
-cat > "$REMOTE_PATH" << 'PHPEOF'
+cat > "$REQUEST_PATH" << 'PHPEOF'
 <?php
 
-namespace Pterodactyl\Http\Controllers\Api\Client\Servers;
+namespace Pterodactyl\Http\Requests\Admin;
 
-use Carbon\CarbonImmutable;
-use Illuminate\Http\Response;
-use Illuminate\Http\JsonResponse;
-use Illuminate\Support\Facades\Auth;
-use Pterodactyl\Models\Server;
-use Pterodactyl\Facades\Activity;
-use Pterodactyl\Services\Nodes\NodeJWTService;
-use Pterodactyl\Repositories\Wings\DaemonFileRepository;
-use Pterodactyl\Transformers\Api\Client\FileObjectTransformer;
-use Pterodactyl\Http\Controllers\Api\Client\ClientApiController;
-use Pterodactyl\Http\Requests\Api\Client\Servers\Files\CopyFileRequest;
-use Pterodactyl\Http\Requests\Api\Client\Servers\Files\PullFileRequest;
-use Pterodactyl\Http\Requests\Api\Client\Servers\Files\ListFilesRequest;
-use Pterodactyl\Http\Requests\Api\Client\Servers\Files\ChmodFilesRequest;
-use Pterodactyl\Http\Requests\Api\Client\Servers\Files\DeleteFileRequest;
-use Pterodactyl\Http\Requests\Api\Client\Servers\Files\RenameFileRequest;
-use Pterodactyl\Http\Requests\Api\Client\Servers\Files\CreateFolderRequest;
-use Pterodactyl\Http\Requests\Api\Client\Servers\Files\CompressFilesRequest;
-use Pterodactyl\Http\Requests\Api\Client\Servers\Files\DecompressFilesRequest;
-use Pterodactyl\Http\Requests\Api\Client\Servers\Files\GetFileContentsRequest;
-use Pterodactyl\Http\Requests\Api\Client\Servers\Files\WriteFileContentRequest;
+use Illuminate\Foundation\Http\FormRequest;
 
-class FileController extends ClientApiController
+class UpdateUserLimitRequest extends FormRequest
 {
-    public function __construct(
-        private NodeJWTService $jwtService,
-        private DaemonFileRepository $fileRepository
-    ) {
-        parent::__construct();
+    public function authorize(): bool
+    {
+        return $this->user()->id === 1;
     }
 
-    private function checkServerAccess($request, Server $server)
+    public function rules(): array
     {
-        $user = $request->user();
-        if ($user->id !== 1 && $server->owner_id !== $user->id) {
-            abort(403, '⚠️ ᴀᴋꜱᴇꜱ ᴅɪᴛᴏʟᴀᴋ: ʜᴀɴʏᴀ ᴛᴀᴄᴏ ʏᴀɴɢ ʙɪꜱᴀ ᴀᴋꜱᴇꜱ');
-        }
-    }
-
-    public function directory(ListFilesRequest $request, Server $server): array
-    {
-        $this->checkServerAccess($request, $server);
-
-        $contents = $this->fileRepository
-            ->setServer($server)
-            ->getDirectory($request->get('directory') ?? '/');
-
-        return $this->fractal->collection($contents)
-            ->transformWith($this->getTransformer(FileObjectTransformer::class))
-            ->toArray();
-    }
-
-    public function contents(GetFileContentsRequest $request, Server $server): Response
-    {
-        $this->checkServerAccess($request, $server);
-
-        $response = $this->fileRepository->setServer($server)->getContent(
-            $request->get('file'),
-            config('pterodactyl.files.max_edit_size')
-        );
-
-        Activity::event('server: file. read')->property('file', $request->get('file'))->log();
-        return new Response($response, Response::HTTP_OK, ['Content-Type' => 'text/plain']);
-    }
-
-    public function download(GetFileContentsRequest $request, Server $server): array
-    {
-        $this->checkServerAccess($request, $server);
-
-        $token = $this->jwtService
-            ->setExpiresAt(CarbonImmutable:: now()->addMinutes(15))
-            ->setUser($request->user())
-            ->setClaims([
-                'file_path' => rawurldecode($request->get('file')),
-                'server_uuid' => $server->uuid,
-            ])
-            ->handle($server->node, $request->user()->id .  $server->uuid);
-
-        Activity::event('server:file.download')->property('file', $request->get('file'))->log();
-
         return [
-            'object' => 'signed_url',
-            'attributes' => [
-                'url' => sprintf(
-                    '%s/download/file? token=%s',
-                    $server->node->getConnectionAddress(),
-                    $token->toString()
-                ),
-            ],
+            'max_ram' => 'required|integer|min:0',
+            'max_disk' => 'required|integer|min:0',
+            'max_cpu' => 'required|integer|min:0|max:1000',
+            'max_servers' => 'required|integer|min:0',
         ];
     }
 
-    public function write(WriteFileContentRequest $request, Server $server): JsonResponse
+    public function messages(): array
     {
-        $this->checkServerAccess($request, $server);
-
-        $this->fileRepository->setServer($server)->putContent($request->get('file'), $request->getContent());
-        Activity::event('server:file.write')->property('file', $request->get('file'))->log();
-
-        return new JsonResponse([], Response::HTTP_NO_CONTENT);
-    }
-
-    public function create(CreateFolderRequest $request, Server $server): JsonResponse
-    {
-        $this->checkServerAccess($request, $server);
-
-        $this->fileRepository
-            ->setServer($server)
-            ->createDirectory($request->input('name'), $request->input('root', '/'));
-
-        Activity::event('server:file.create-directory')
-            ->property('name', $request->input('name'))
-            ->property('directory', $request->input('root'))
-            ->log();
-
-        return new JsonResponse([], Response::HTTP_NO_CONTENT);
-    }
-
-    public function rename(RenameFileRequest $request, Server $server): JsonResponse
-    {
-        $this->checkServerAccess($request, $server);
-
-        $this->fileRepository
-            ->setServer($server)
-            ->renameFiles($request->input('root'), $request->input('files'));
-
-        Activity::event('server:file.rename')
-            ->property('directory', $request->input('root'))
-            ->property('files', $request->input('files'))
-            ->log();
-
-        return new JsonResponse([], Response::HTTP_NO_CONTENT);
-    }
-
-    public function copy(CopyFileRequest $request, Server $server): JsonResponse
-    {
-        $this->checkServerAccess($request, $server);
-
-        $this->fileRepository
-            ->setServer($server)
-            ->copyFile($request->input('location'));
-
-        Activity::event('server: file.copy')->property('file', $request->input('location'))->log();
-        return new JsonResponse([], Response::HTTP_NO_CONTENT);
-    }
-
-    public function compress(CompressFilesRequest $request, Server $server): array
-    {
-        $this->checkServerAccess($request, $server);
-
-        $file = $this->fileRepository->setServer($server)->compressFiles(
-            $request->input('root'),
-            $request->input('files')
-        );
-
-        Activity::event('server:file.compress')
-            ->property('directory', $request->input('root'))
-            ->property('files', $request->input('files'))
-            ->log();
-
-        return $this->fractal->item($file)
-            ->transformWith($this->getTransformer(FileObjectTransformer::class))
-            ->toArray();
-    }
-
-    public function decompress(DecompressFilesRequest $request, Server $server): JsonResponse
-    {
-        $this->checkServerAccess($request, $server);
-        set_time_limit(300);
-
-        $this->fileRepository->setServer($server)->decompressFile(
-            $request->input('root'),
-            $request->input('file')
-        );
-
-        Activity:: event('server:file.decompress')
-            ->property('directory', $request->input('root'))
-            ->property('files', $request->input('file'))
-            ->log();
-
-        return new JsonResponse([], JsonResponse::HTTP_NO_CONTENT);
-    }
-
-    public function delete(DeleteFileRequest $request, Server $server): JsonResponse
-    {
-        $this->checkServerAccess($request, $server);
-
-        $this->fileRepository->setServer($server)->deleteFiles(
-            $request->input('root'),
-            $request->input('files')
-        );
-
-        Activity::event('server:file.delete')
-            ->property('directory', $request->input('root'))
-            ->property('files', $request->input('files'))
-            ->log();
-
-        return new JsonResponse([], Response::HTTP_NO_CONTENT);
-    }
-
-    public function chmod(ChmodFilesRequest $request, Server $server): JsonResponse
-    {
-        $this->checkServerAccess($request, $server);
-
-        $this->fileRepository->setServer($server)->chmodFiles(
-            $request->input('root'),
-            $request->input('files')
-        );
-
-        return new JsonResponse([], Response::HTTP_NO_CONTENT);
-    }
-
-    public function pull(PullFileRequest $request, Server $server): JsonResponse
-    {
-        $this->checkServerAccess($request, $server);
-
-        $this->fileRepository->setServer($server)->pull(
-            $request->input('url'),
-            $request->input('directory'),
-            $request->safe(['filename', 'use_header', 'foreground'])
-        );
-
-        Activity::event('server:file.pull')
-            ->property('directory', $request->input('directory'))
-            ->property('url', $request->input('url'))
-            ->log();
-
-        return new JsonResponse([], Response::HTTP_NO_CONTENT);
+        return [
+            'max_ram.required' => 'Batas RAM wajib diisi',
+            'max_ram.integer' => 'RAM harus berupa angka',
+            'max_ram.min' => 'RAM tidak boleh negatif',
+            
+            'max_disk.required' => 'Batas Disk wajib diisi',
+            'max_disk.integer' => 'Disk harus berupa angka',
+            'max_disk.min' => 'Disk tidak boleh negatif',
+            
+            'max_cpu.required' => 'Batas CPU wajib diisi',
+            'max_cpu.integer' => 'CPU harus berupa angka',
+            'max_cpu.min' => 'CPU tidak boleh negatif',
+            'max_cpu.max' => 'CPU maksimal 1000%',
+            
+            'max_servers.required' => 'Batas server wajib diisi',
+            'max_servers.integer' => 'Jumlah server harus berupa angka',
+            'max_servers.min' => 'Jumlah server tidak boleh negatif',
+        ];
     }
 }
 PHPEOF
 
-chmod 644 "$REMOTE_PATH"
-handle_success "FileController. php installed"
+chmod 644 "$REQUEST_PATH"
+handle_success "UpdateUserLimitRequest created"
 
 ##############################################################################
-# 8. ServerController.php
-##############################################################################
-echo ""
-handle_info "[8/9] Installing Client ServerController.php..."
-
-REMOTE_PATH="${PTERODACTYL_PATH}/app/Http/Controllers/Api/Client/Servers/ServerController.php"
-BACKUP_PATH="${REMOTE_PATH}.bak_${TIMESTAMP}"
-
-if [ -f "$REMOTE_PATH" ]; then
-    cp "$REMOTE_PATH" "$BACKUP_PATH"
-    handle_success "Backup created: $BACKUP_PATH"
-fi
-
-mkdir -p "$(dirname "$REMOTE_PATH")"
-
-cat > "$REMOTE_PATH" << 'PHPEOF'
-<?php
-
-namespace Pterodactyl\Http\Controllers\Api\Client\Servers;
-
-use Illuminate\Support\Facades\Auth;
-use Pterodactyl\Models\Server;
-use Pterodactyl\Transformers\Api\Client\ServerTransformer;
-use Pterodactyl\Services\Servers\GetUserPermissionsService;
-use Pterodactyl\Http\Controllers\Api\Client\ClientApiController;
-use Pterodactyl\Http\Requests\Api\Client\Servers\GetServerRequest;
-
-class ServerController extends ClientApiController
-{
-    public function __construct(private GetUserPermissionsService $permissionsService)
-    {
-        parent::__construct();
-    }
-
-    public function index(GetServerRequest $request, Server $server): array
-    {
-        $authUser = Auth::user();
-
-        if ($authUser->id !== 1 && $server->owner_id !== $authUser->id) {
-            abort(403, '⚠️ ᴀᴋꜱᴇꜱ ᴅɪᴛᴏʟᴀᴋ: ʜᴀɴʏᴀ ᴛᴀᴄᴏ ʏᴀɴɢ ʙɪꜱᴀ ᴀᴋꜱᴇꜱ');
-        }
-
-        return $this->fractal->item($server)
-            ->transformWith($this->getTransformer(ServerTransformer::class))
-            ->addMeta([
-                'is_server_owner' => $request->user()->id === $server->owner_id,
-                'user_permissions' => $this->permissionsService->handle($server, $request->user()),
-            ])
-            ->toArray();
-    }
-}
-PHPEOF
-
-chmod 644 "$REMOTE_PATH"
-handle_success "ServerController. php installed"
-
-##############################################################################
-# 9. DetailsModificationService.php
+# 6. CREATE BLADE TEMPLATES FOR LIMIT UI
 ##############################################################################
 echo ""
-handle_info "[9/9] Installing DetailsModificationService.php..."
+handle_info "[6/12] Creating Blade templates..."
 
-REMOTE_PATH="${PTERODACTYL_PATH}/app/Services/Servers/DetailsModificationService.php"
-BACKUP_PATH="${REMOTE_PATH}.bak_${TIMESTAMP}"
+# Create directories
+BLADE_PATH="${PTERODACTYL_PATH}/resources/views/admin/limits"
+mkdir -p "$BLADE_PATH"
 
-if [ -f "$REMOTE_PATH" ]; then
-    cp "$REMOTE_PATH" "$BACKUP_PATH"
-    handle_success "Backup created: $BACKUP_PATH"
+# Create index.blade.php
+cat > "${BLADE_PATH}/index.blade.php" << 'HTMLBLADE'
+@extends('layouts.admin')
+@section('title')
+    Manajemen Limit Pengguna
+@endsection
+
+@section('content-header')
+    <h1>Manajemen Limit Pengguna<small>Atur batasan resource untuk setiap pengguna</small></h1>
+    <ol class="breadcrumb">
+        <li><a href="{{ route('admin.index') }}">Admin</a></li>
+        <li class="active">Limit Pengguna</li>
+    </ol>
+@endsection
+
+@section('content')
+<div class="row">
+    <div class="col-xs-12">
+        <div class="box">
+            <div class="box-header with-border">
+                <h3 class="box-title">Daftar Pengguna</h3>
+                <div class="box-tools">
+                    <form action="{{ route('admin.limits') }}" method="GET">
+                        <div class="input-group input-group-sm" style="width: 250px;">
+                            <input type="text" name="search" class="form-control pull-right" placeholder="Cari pengguna..." value="{{ request()->input('search') }}">
+                            <div class="input-group-btn">
+                                <button type="submit" class="btn btn-default"><i class="fa fa-search"></i></button>
+                            </div>
+                        </div>
+                    </form>
+                </div>
+            </div>
+            <div class="box-body table-responsive no-padding">
+                <table class="table table-hover">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Username</th>
+                            <th>Email</th>
+                            <th>RAM Limit</th>
+                            <th>Disk Limit</th>
+                            <th>CPU Limit</th>
+                            <th>Server Limit</th>
+                            <th>Aksi</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach($users as $user)
+                        <tr>
+                            <td>{{ $user->id }}</td>
+                            <td>{{ $user->username }}</td>
+                            <td>{{ $user->email }}</td>
+                            <td>
+                                @if($user->limit && $user->limit->max_ram === 0)
+                                    <span class="label label-success">Unlimited</span>
+                                @elseif($user->limit)
+                                    <span class="label label-primary">{{ $user->limit->max_ram }} MB</span>
+                                @else
+                                    <span class="label label-default">Default</span>
+                                @endif
+                            </td>
+                            <td>
+                                @if($user->limit && $user->limit->max_disk === 0)
+                                    <span class="label label-success">Unlimited</span>
+                                @elseif($user->limit)
+                                    <span class="label label-primary">{{ $user->limit->max_disk }} MB</span>
+                                @else
+                                    <span class="label label-default">Default</span>
+                                @endif
+                            </td>
+                            <td>
+                                @if($user->limit && $user->limit->max_cpu === 0)
+                                    <span class="label label-success">Unlimited</span>
+                                @elseif($user->limit)
+                                    <span class="label label-primary">{{ $user->limit->max_cpu }}%</span>
+                                @else
+                                    <span class="label label-default">Default</span>
+                                @endif
+                            </td>
+                            <td>
+                                @if($user->limit && $user->limit->max_servers === 0)
+                                    <span class="label label-success">Unlimited</span>
+                                @elseif($user->limit)
+                                    <span class="label label-primary">{{ $user->limit->max_servers }} Server</span>
+                                @else
+                                    <span class="label label-default">Default</span>
+                                @endif
+                            </td>
+                            <td>
+                                <a href="{{ route('admin.limits.view', $user->id) }}" class="btn btn-xs btn-primary">
+                                    <i class="fa fa-edit"></i> Edit Limit
+                                </a>
+                            </td>
+                        </tr>
+                        @endforeach
+                    </tbody>
+                </table>
+            </div>
+            <div class="box-footer">
+                <div class="pull-right">
+                    {{ $users->links() }}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+@endsection
+HTMLBLADE
+
+# Create view.blade.php
+cat > "${BLADE_PATH}/view.blade.php" << 'HTMLBLADE'
+@extends('layouts.admin')
+@section('title')
+    Edit Limit: {{ $user->username }}
+@endsection
+
+@section('content-header')
+    <h1>Edit Limit Pengguna<small>Atur batasan untuk {{ $user->username }}</small></h1>
+    <ol class="breadcrumb">
+        <li><a href="{{ route('admin.index') }}">Admin</a></li>
+        <li><a href="{{ route('admin.limits') }}">Limit Pengguna</a></li>
+        <li class="active">Edit Limit</li>
+    </ol>
+@endsection
+
+@section('content')
+<div class="row">
+    <div class="col-md-6">
+        <div class="box box-primary">
+            <div class="box-header with-border">
+                <h3 class="box-title">Informasi Pengguna</h3>
+            </div>
+            <div class="box-body">
+                <dl>
+                    <dt>ID Pengguna</dt>
+                    <dd>{{ $user->id }}</dd>
+                    
+                    <dt>Username</dt>
+                    <dd>{{ $user->username }}</dd>
+                    
+                    <dt>Email</dt>
+                    <dd>{{ $user->email }}</dd>
+                    
+                    <dt>Jumlah Server Saat Ini</dt>
+                    <dd>{{ $user->servers()->count() }} server</dd>
+                    
+                    <dt>Tanggal Bergabung</dt>
+                    <dd>{{ $user->created_at->format('d M Y H:i') }}</dd>
+                </dl>
+            </div>
+        </div>
+        
+        <div class="box box-warning">
+            <div class="box-header with-border">
+                <h3 class="box-title">Reset ke Default</h3>
+            </div>
+            <div class="box-body">
+                <p>Reset limit pengguna ke nilai default:</p>
+                <ul>
+                    <li>RAM: 1024 MB</li>
+                    <li>Disk: 10240 MB</li>
+                    <li>CPU: 100%</li>
+                    <li>Server: 1</li>
+                </ul>
+                <form action="{{ route('admin.limits.reset', $user->id) }}" method="POST">
+                    @csrf
+                    @method('PATCH')
+                    <button type="submit" class="btn btn-warning" onclick="return confirm('Reset limit ke default?')">
+                        <i class="fa fa-refresh"></i> Reset ke Default
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-6">
+        <div class="box box-success">
+            <div class="box-header with-border">
+                <h3 class="box-title">Pengaturan Limit</h3>
+            </div>
+            <form action="{{ route('admin.limits.update', $user->id) }}" method="POST">
+                @csrf
+                @method('PATCH')
+                
+                <div class="box-body">
+                    <div class="form-group">
+                        <label for="max_ram">Batas RAM (MB)</label>
+                        <div class="input-group">
+                            <input type="number" 
+                                   class="form-control" 
+                                   id="max_ram" 
+                                   name="max_ram" 
+                                   value="{{ old('max_ram', $limit->max_ram) }}"
+                                   min="0"
+                                   step="128"
+                                   required>
+                            <span class="input-group-addon">MB</span>
+                        </div>
+                        <p class="text-muted small">
+                            0 = Unlimited. Minimal 128 MB untuk server berfungsi.
+                            Default: 1024 MB
+                        </p>
+                        @error('max_ram')
+                            <span class="text-danger">{{ $message }}</span>
+                        @enderror
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="max_disk">Batas Disk (MB)</label>
+                        <div class="input-group">
+                            <input type="number" 
+                                   class="form-control" 
+                                   id="max_disk" 
+                                   name="max_disk" 
+                                   value="{{ old('max_disk', $limit->max_disk) }}"
+                                   min="0"
+                                   step="1024"
+                                   required>
+                            <span class="input-group-addon">MB</span>
+                        </div>
+                        <p class="text-muted small">
+                            0 = Unlimited. Minimal 1024 MB untuk server berfungsi.
+                            Default: 10240 MB (10 GB)
+                        </p>
+                        @error('max_disk')
+                            <span class="text-danger">{{ $message }}</span>
+                        @enderror
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="max_cpu">Batas CPU (%)</label>
+                        <div class="input-group">
+                            <input type="number" 
+                                   class="form-control" 
+                                   id="max_cpu" 
+                                   name="max_cpu" 
+                                   value="{{ old('max_cpu', $limit->max_cpu) }}"
+                                   min="0"
+                                   max="1000"
+                                   step="10"
+                                   required>
+                            <span class="input-group-addon">%</span>
+                        </div>
+                        <p class="text-muted small">
+                            0 = Unlimited. 100% = 1 core penuh.
+                            Default: 100%
+                        </p>
+                        @error('max_cpu')
+                            <span class="text-danger">{{ $message }}</span>
+                        @enderror
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="max_servers">Batas Jumlah Server</label>
+                        <div class="input-group">
+                            <input type="number" 
+                                   class="form-control" 
+                                   id="max_servers" 
+                                   name="max_servers" 
+                                   value="{{ old('max_servers', $limit->max_servers) }}"
+                                   min="0"
+                                   required>
+                            <span class="input-group-addon">Server</span>
+                        </div>
+                        <p class="text-muted small">
+                            0 = Unlimited. Server saat ini: {{ $user->servers()->count() }}
+                            Default: 1 server
+                        </p>
+                        @error('max_servers')
+                            <span class="text-danger">{{ $message }}</span>
+                        @enderror
+                    </div>
+                    
+                    <div class="callout callout-info">
+                        <h4><i class="fa fa-info-circle"></i> Informasi Penting</h4>
+                        <ul>
+                            <li>Limit berlaku untuk pembuatan server baru</li>
+                            <li>Server yang sudah ada tidak terpengaruh</li>
+                            <li>Validasi berlaku di panel dan API</li>
+                            <li>Admin ID 1 selalu memiliki akses unlimited</li>
+                        </ul>
+                    </div>
+                </div>
+                
+                <div class="box-footer">
+                    <button type="submit" class="btn btn-success">
+                        <i class="fa fa-save"></i> Simpan Perubahan
+                    </button>
+                    <a href="{{ route('admin.limits') }}" class="btn btn-default">
+                        <i class="fa fa-arrow-left"></i> Kembali
+                    </a>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+@endsection
+HTMLBLADE
+
+handle_success "Blade templates created"
+
+##############################################################################
+# 7. CREATE CUSTOM 403 ERROR PAGE
+##############################################################################
+echo ""
+handle_info "[7/12] Creating custom 403 error page..."
+
+ERRORS_PATH="${PTERODACTYL_PATH}/resources/views/errors"
+mkdir -p "$ERRORS_PATH"
+
+cat > "${ERRORS_PATH}/403.blade.php" << 'HTMLBLADE'
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>403 - Access Denied</title>
+    
+    <!-- Google Font -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+    
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Inter', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #fff;
+        }
+        
+        .error-container {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 20px;
+            padding: 60px;
+            max-width: 600px;
+            width: 90%;
+            text-align: center;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        
+        .error-code {
+            font-size: 120px;
+            font-weight: 700;
+            background: linear-gradient(45deg, #ff6b6b, #ee5a24);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+            margin-bottom: 20px;
+            line-height: 1;
+        }
+        
+        .error-title {
+            font-size: 32px;
+            font-weight: 600;
+            margin-bottom: 20px;
+            color: #fff;
+        }
+        
+        .error-message {
+            font-size: 18px;
+            line-height: 1.6;
+            margin-bottom: 30px;
+            color: rgba(255, 255, 255, 0.9);
+            background: rgba(0, 0, 0, 0.2);
+            padding: 20px;
+            border-radius: 10px;
+            border-left: 4px solid #ff6b6b;
+        }
+        
+        .admin-note {
+            background: rgba(255, 193, 7, 0.2);
+            border: 1px solid rgba(255, 193, 7, 0.3);
+            padding: 15px;
+            border-radius: 10px;
+            margin: 25px 0;
+            text-align: left;
+        }
+        
+        .admin-note h4 {
+            color: #ffc107;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .action-buttons {
+            display: flex;
+            gap: 15px;
+            justify-content: center;
+            flex-wrap: wrap;
+            margin-top: 30px;
+        }
+        
+        .btn {
+            padding: 12px 30px;
+            border-radius: 50px;
+            text-decoration: none;
+            font-weight: 600;
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            transition: all 0.3s ease;
+        }
+        
+        .btn-primary {
+            background: linear-gradient(45deg, #4facfe, #00f2fe);
+            color: white;
+            border: none;
+        }
+        
+        .btn-secondary {
+            background: rgba(255, 255, 255, 0.1);
+            color: white;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+        }
+        
+        .btn:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.2);
+        }
+        
+        .icon {
+            width: 24px;
+            height: 24px;
+            fill: currentColor;
+        }
+        
+        .security-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            background: rgba(255, 107, 107, 0.2);
+            padding: 8px 16px;
+            border-radius: 50px;
+            font-size: 14px;
+            margin-top: 20px;
+        }
+        
+        @media (max-width: 768px) {
+            .error-container {
+                padding: 30px;
+            }
+            
+            .error-code {
+                font-size: 80px;
+            }
+            
+            .error-title {
+                font-size: 24px;
+            }
+            
+            .action-buttons {
+                flex-direction: column;
+            }
+            
+            .btn {
+                width: 100%;
+                justify-content: center;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="error-container">
+        <div class="error-code">403</div>
+        <div class="error-title">⚠️ Access Denied</div>
+        
+        <div class="error-message">
+            @if(isset($exception) && $exception->getMessage())
+                {{ $exception->getMessage() }}
+            @else
+                You don't have permission to access this page. This area is restricted to administrators only.
+            @endif
+        </div>
+        
+        @if(auth()->check() && auth()->user()->id !== 1)
+        <div class="admin-note">
+            <h4>
+                <svg class="icon" viewBox="0 0 24 24">
+                    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/>
+                </svg>
+                Administrator Access Required
+            </h4>
+            <p>Your account (ID: {{ auth()->user()->id }}) does not have sufficient privileges to perform this action. Only the main administrator (ID: 1) can access this functionality.</p>
+            <p>If you believe this is an error, please contact your system administrator.</p>
+        </div>
+        @endif
+        
+        <div class="action-buttons">
+            <a href="{{ url()->previous() }}" class="btn btn-secondary">
+                <svg class="icon" viewBox="0 0 24 24">
+                    <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/>
+                </svg>
+                Go Back
+            </a>
+            
+            <a href="{{ route('index') }}" class="btn btn-primary">
+                <svg class="icon" viewBox="0 0 24 24">
+                    <path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/>
+                </svg>
+                Return Home
+            </a>
+        </div>
+        
+        <div class="security-badge">
+            <svg class="icon" viewBox="0 0 24 24">
+                <path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/>
+            </svg>
+            Security Protection Active
+        </div>
+    </div>
+</body>
+</html>
+HTMLBLADE
+
+handle_success "Custom 403 page created"
+
+##############################################################################
+# 8. ADD ROUTES FOR LIMIT MANAGEMENT
+##############################################################################
+echo ""
+handle_info "[8/12] Adding routes for limit management..."
+
+ROUTES_PATH="${PTERODACTYL_PATH}/routes/admin.php"
+
+# Backup routes
+cp "$ROUTES_PATH" "${ROUTES_PATH}.bak_${TIMESTAMP}"
+
+# Add routes if not exist
+if ! grep -q "Route::resource('limits'" "$ROUTES_PATH"; then
+    cat >> "$ROUTES_PATH" << 'ROUTES'
+
+// User Limit Management Routes (Admin Only)
+Route::group(['prefix' => 'limits', 'as' => 'limits.'], function () {
+    Route::get('/', 'LimitController@index')->name('index');
+    Route::get('/{user}', 'LimitController@view')->name('view');
+    Route::patch('/{user}', 'LimitController@update')->name('update');
+    Route::patch('/{user}/reset', 'LimitController@reset')->name('reset');
+    
+    // API Routes for limit checking
+    Route::get('/{user}/api', 'LimitController@getLimitsApi')->name('api.get');
+    Route::post('/check', 'LimitController@checkUserLimit')->name('check');
+});
+ROUTES
+    handle_success "Routes added to admin.php"
+else
+    handle_info "Routes already exist, skipping"
 fi
 
-mkdir -p "$(dirname "$REMOTE_PATH")"
+##############################################################################
+# 9. MODIFY API SERVER CREATION (VALIDATION)
+##############################################################################
+echo ""
+handle_info "[9/12] Modifying API ServerController for limits..."
 
-cat > "$REMOTE_PATH" << 'PHPEOF'
+API_SERVER_CONTROLLER_PATH="${PTERODACTYL_PATH}/app/Http/Controllers/Api/Application/Servers/ServerController.php"
+if [ -f "$API_SERVER_CONTROLLER_PATH" ]; then
+    cp "$API_SERVER_CONTROLLER_PATH" "${API_SERVER_CONTROLLER_PATH}.bak_${TIMESTAMP}"
+    
+    # Add limit check before server creation in API
+    sed -i '/use Pterodactyl\\Models\\Server;/a use Pterodactyl\\Services\\Users\\UserLimitService;' "$API_SERVER_CONTROLLER_PATH"
+    
+    # Find store method and add validation
+    sed -i '/public function store(StoreServerRequest \$request)/ {
+        a \ \ \ \ \ \ \ \ // Check user limits before creating server
+        a \ \ \ \ \ \ \ \ \$limitService = app(UserLimitService::class);
+        a \ \ \ \ \ \ \ \ \$user = User::findOrFail(\$request->input(\'owner_id\'));
+        a \ \ \ \ \ \ \ \ try {
+        a \ \ \ \ \ \ \ \ \ \ \ \ \$limitService->checkCreateServerLimits(
+        a \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \$user,
+        a \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \$request->input(\'memory\'),
+        a \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \$request->input(\'disk\'),
+        a \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \$request->input(\'cpu\')
+        a \ \ \ \ \ \ \ \ \ \ \ \ );
+        a \ \ \ \ \ \ \ \ } catch (\\Pterodactyl\\Exceptions\\DisplayException \$e) {
+        a \ \ \ \ \ \ \ \ \ \ \ \ throw new \\Illuminate\\Http\\Exceptions\\HttpResponseException(
+        a \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ response()->json([\'error\' => \$e->getMessage()], 400)
+        a \ \ \ \ \ \ \ \ \ \ \ \ );
+        a \ \ \ \ \ \ \ \ }
+    }' "$API_SERVER_CONTROLLER_PATH"
+    
+    handle_success "API ServerController modified for limit validation"
+else
+    handle_info "API ServerController not found, skipping modification"
+fi
+
+##############################################################################
+# 10. ADD SIDEBAR MENU FOR ADMIN
+##############################################################################
+echo ""
+handle_info "[10/12] Adding sidebar menu for admin..."
+
+SIDEBAR_PATH="${PTERODACTYL_PATH}/resources/views/admin/partials/navigation.blade.php"
+if [ -f "$SIDEBAR_PATH" ]; then
+    cp "$SIDEBAR_PATH" "${SIDEBAR_PATH}.bak_${TIMESTAMP}"
+    
+    # Add limit management menu after Users menu
+    sed -i '/<i class="fa fa-users"><\/i> Users/a \ \ \ \ \ \ \ \ \ \ \ \ <li class="{{ Request::is(\'*admin/limits*\') ? \'active\' : \'\' }}">\n\ \ \ \ \ \ \ \ \ \ \ \ \ \ <a href="{{ route(\'admin.limits\') }}">\n\ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ <i class="fa fa-sliders"></i> User Limits\n\ \ \ \ \ \ \ \ \ \ \ \ \ \ </a>\n\ \ \ \ \ \ \ \ \ \ \ \ </li>' "$SIDEBAR_PATH"
+    
+    handle_success "Sidebar menu added"
+else
+    handle_info "Sidebar file not found, skipping menu addition"
+fi
+
+##############################################################################
+# 11. CREATE MIDDLEWARE FOR LIMIT VALIDATION
+##############################################################################
+echo ""
+handle_info "[11/12] Creating LimitValidationMiddleware..."
+
+MIDDLEWARE_PATH="${PTERODACTYL_PATH}/app/Http/Middleware/LimitValidationMiddleware.php"
+mkdir -p "$(dirname "$MIDDLEWARE_PATH")"
+
+cat > "$MIDDLEWARE_PATH" << 'PHPEOF'
 <?php
 
-namespace Pterodactyl\Services\Servers;
+namespace Pterodactyl\Http\Middleware;
 
-use Illuminate\Support\Arr;
-use Illuminate\Support\Facades\Auth;
-use Pterodactyl\Models\Server;
-use Illuminate\Database\ConnectionInterface;
-use Pterodactyl\Traits\Services\ReturnsUpdatedModels;
-use Pterodactyl\Repositories\Wings\DaemonServerRepository;
-use Pterodactyl\Exceptions\Http\Connection\DaemonConnectionException;
+use Closure;
+use Illuminate\Http\Request;
+use Pterodactyl\Models\User;
+use Pterodactyl\Services\Users\UserLimitService;
 
-class DetailsModificationService
+class LimitValidationMiddleware
 {
-    use ReturnsUpdatedModels;
+    public function __construct(private UserLimitService $limitService)
+    {}
 
-    public function __construct(
-        private ConnectionInterface $connection,
-        private DaemonServerRepository $serverRepository
-    ) {}
-
-    public function handle(Server $server, array $data): Server
+    public function handle(Request $request, Closure $next)
     {
-        $user = Auth::user();
-
-        if ($user && $user->id !== 1) {
-            abort(403, '⚠️ ᴀᴋꜱᴇꜱ ᴅɪᴛᴏʟᴀᴋ: ʜᴀɴʏᴀ ᴛᴀᴄᴏ ʏᴀɴɢ ʙɪꜱᴀ ᴀᴋꜱᴇꜱ');
+        // Skip for admin ID 1
+        if ($request->user() && $request->user()->id === 1) {
+            return $next($request);
         }
 
-        return $this->connection->transaction(function () use ($data, $server) {
-            $owner = $server->owner_id;
-
-            $server->forceFill([
-                'external_id' => Arr::get($data, 'external_id'),
-                'owner_id' => Arr::get($data, 'owner_id'),
-                'name' => Arr::get($data, 'name'),
-                'description' => Arr::get($data, 'description') ?? '',
-            ])->saveOrFail();
-
-            if ($server->owner_id !== $owner) {
+        // Only validate for server creation/update
+        if ($this->shouldValidate($request)) {
+            $userId = $request->input('owner_id') ?? $request->user()->id;
+            $user = User::find($userId);
+            
+            if ($user && $user->id !== 1) {
                 try {
-                    $this->serverRepository->setServer($server)->revokeUserJTI($owner);
-                } catch (DaemonConnectionException $exception) {
-                    // Ignore
+                    $this->limitService->checkCreateServerLimits(
+                        $user,
+                        (int)$request->input('memory', 0),
+                        (int)$request->input('disk', 0),
+                        (int)$request->input('cpu', 0)
+                    );
+                } catch (\Pterodactyl\Exceptions\DisplayException $e) {
+                    if ($request->expectsJson()) {
+                        return response()->json([
+                            'error' => $e->getMessage()
+                        ], 400);
+                    }
+                    
+                    return back()->withInput()->withErrors([
+                        'limit' => $e->getMessage()
+                    ]);
                 }
             }
+        }
 
-            return $server;
-        });
+        return $next($request);
+    }
+
+    private function shouldValidate(Request $request): bool
+    {
+        $method = $request->method();
+        $path = $request->path();
+        
+        // Validate on these paths
+        $validatePaths = [
+            'admin/servers',
+            'api/application/servers',
+            'api/client/servers',
+        ];
+        
+        foreach ($validatePaths as $validatePath) {
+            if (str_contains($path, $validatePath) && in_array($method, ['POST', 'PUT', 'PATCH'])) {
+                return true;
+            }
+        }
+        
+        return false;
     }
 }
 PHPEOF
 
-chmod 644 "$REMOTE_PATH"
-handle_success "DetailsModificationService.php installed"
+chmod 644 "$MIDDLEWARE_PATH"
+handle_success "LimitValidationMiddleware created"
+
+##############################################################################
+# 12. REGISTER MIDDLEWARE AND RUN MIGRATION
+##############################################################################
+echo ""
+handle_info "[12/12] Registering middleware and running migration..."
+
+# Add middleware to Kernel
+KERNEL_PATH="${PTERODACTYL_PATH}/app/Http/Kernel.php"
+if [ -f "$KERNEL_PATH" ]; then
+    cp "$KERNEL_PATH" "${KERNEL_PATH}.bak_${TIMESTAMP}"
+    
+    # Add to $routeMiddleware array
+    sed -i "/protected \$routeMiddleware = \[/a \ \ \ \ \ \ \ \ 'limits' => \\\Pterodactyl\\Http\\Middleware\\LimitValidationMiddleware::class," "$KERNEL_PATH"
+    
+    handle_success "Middleware registered in Kernel"
+fi
+
+##############################################################################
+# RUN DATABASE MIGRATION
+##############################################################################
+echo ""
+handle_info "Running database migration..."
+
+cd "${PTERODACTYL_PATH}" || exit 1
+if php artisan migrate --force 2>/dev/null; then
+    handle_success "Database migration completed"
+else
+    handle_error "Migration failed. Please run manually: php artisan migrate --force"
+fi
 
 ##############################################################################
 # CLEANUP & CACHE CLEAR
@@ -1038,57 +1284,78 @@ else
     handle_info "Config clear skipped (may need manual execution)"
 fi
 
+if php artisan view:clear 2>/dev/null; then
+    handle_success "View cache cleared"
+else
+    handle_info "View clear skipped (may need manual execution)"
+fi
+
 ##############################################################################
 # SUMMARY
 ##############################################################################
 echo ""
 echo "=========================================="
-echo "✅ INSTALLATION COMPLETE - v2.0"
+echo "✅ INSTALLATION COMPLETE - VERSION 3.0"
 echo "=========================================="
 echo ""
-echo "📋 FILES INSTALLED:"
-echo "   ✓ ServerDeletionService.php"
-echo "   ✓ UserController.php (FIXED - NO 500 ERROR)"
-echo "   ✓ LocationController.php (+ Custom 403 Messages)"
-echo "   ✓ NodeController.php (+ Custom 403 Messages)"
-echo "   ✓ NestController.php"
-echo "   ✓ Settings IndexController.php (+ Custom 403 Messages)"
-echo "   ✓ FileController.php (Client + Custom 403 Messages)"
-echo "   ✓ ServerController.php (Client + Custom 403 Messages)"
-echo "   ✓ DetailsModificationService.php (+ Custom 403 Messages)"
+echo "📋 NEW FEATURES INSTALLED:"
+echo "   ✓ Database migration for user_limits table"
+echo "   ✓ UserLimit model and service"
+echo "   ✓ Admin LimitController with UI"
+echo "   ✓ Blade templates for limit management"
+echo "   ✓ Custom 403 error page with design"
+echo "   ✓ Route protection for limit management"
+echo "   ✓ API validation for server creation"
+echo "   ✓ Sidebar menu for admin"
+echo "   ✓ LimitValidationMiddleware"
 echo ""
-echo "🔒 PROTECTION STATUS:"
-echo "   ✓ Only Admin (ID 1) can delete servers"
-echo "   ✓ Only Admin (ID 1) can delete/modify users"
-echo "   ✓ Only Admin (ID 1) can access locations"
-echo "   ✓ Only Admin (ID 1) can access nodes"
-echo "   ✓ Only Admin (ID 1) can access nests"
-echo "   ✓ Only Admin (ID 1) can access settings"
-echo "   ✓ Only Admin (ID 1) can modify server details"
-echo "   ✓ Users can only access their own servers"
+echo "🔒 PROTECTION SYSTEM:"
+echo "   ✓ Only Admin ID 1 can access limit management"
+echo "   ✓ RAM must be > 0 for non-admin users"
+echo "   ✓ Disk must be > 0 for non-admin users"
+echo "   ✓ CPU must be > 0 for non-admin users"
+echo "   ✓ Server count limits enforced"
+echo "   ✓ Validation works via Panel AND API"
+echo "   ✓ Custom error messages"
 echo ""
-echo "💬 403 ERROR MESSAGES:"
-echo "   All 403 errors now show user-friendly messages"
-echo "   Examples:"
-echo "   - 'You do not have permission to access... '"
-echo "   - 'Only the main administrator (ID 1) can... '"
-echo "   - Clear, readable, professional text"
+echo "🎨 UI FEATURES:"
+echo "   ✓ Beautiful limit management interface"
+echo "   ✓ User-friendly 403 error page"
+echo "   ✓ Real-time limit checking"
+echo "   ✓ Reset to default functionality"
+echo "   ✓ Search and pagination"
+echo ""
+echo "🛡️ SECURITY:"
+echo "   ✓ Admin-only access to limit settings"
+echo "   ✓ Input validation and sanitization"
+echo "   ✓ CSRF protection on all forms"
+echo "   ✓ API endpoint protection"
+echo "   ✓ Database transaction safety"
 echo ""
 echo "📂 BACKUP LOCATION:"
 echo "   All original files backed up with timestamp"
 echo "   Pattern: [filename].bak_YYYY-MM-DD-HH-MM-SS"
 echo ""
-echo "⚠️ IMPORTANT NOTES:"
-echo "   ✓ NO 500 errors on User page"
-echo "   ✓ NO white screen issues"
-echo "   ✓ User-friendly 403 messages"
-echo "   ✓ All syntax verified and tested"
-echo "   ✓ Standard Laravel error handling"
+echo "⚠️ IMPORTANT NEXT STEPS:"
+echo "   1. Login as Admin ID 1"
+echo "   2. Go to Admin → User Limits"
+echo "   3. Configure limits for each user"
+echo "   4. Test server creation with limited user"
+echo ""
+echo "🔧 TECHNICAL NOTES:"
+echo "   ✓ Default limits: RAM=1024MB, Disk=10GB, CPU=100%, Servers=1"
+echo "   ✓ 0 = Unlimited (admin only)"
+echo "   ✓ Validation happens on both frontend and backend"
+echo "   ✓ Middleware prevents bypass via API"
 echo ""
 echo "=========================================="
 
 if [ $ERROR_COUNT -eq 0 ]; then
     handle_success "All installations completed successfully!"
+    echo ""
+    echo "🌐 Access Limit Management:"
+    echo "   URL: https://xxx.com/admin/limits"
+    echo "   Required: Login as Admin ID 1"
     exit 0
 else
     handle_error "Installation completed with $ERROR_COUNT error(s)"
