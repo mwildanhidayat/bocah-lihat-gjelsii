@@ -43,49 +43,57 @@ handle_info() {
 }
 
 ##############################################################################
-# 0. CREATE LIMIT DATABASE MIGRATION
+# 0. CREATE LIMIT DATABASE MIGRATION (SAFE & IDEMPOTENT)
 ##############################################################################
 echo ""
 handle_info "[0/12] Creating user_limits table migration..."
 
 MIGRATION_PATH="${PTERODACTYL_PATH}/database/migrations"
-MIGRATION_FILE="${MIGRATION_PATH}/$(date +%Y_%m_%d_%H%M%S)_create_user_limits_table.php"
-
 mkdir -p "$MIGRATION_PATH"
 
-cat > "$MIGRATION_FILE" << 'PHPEOF'
+# Pakai nama tetap, bukan timestamp
+MIGRATION_FILE="${MIGRATION_PATH}/2026_01_17_000000_create_user_limits_table.php"
+
+# Jangan buat ulang kalau sudah ada
+if [ -f "$MIGRATION_FILE" ]; then
+    handle_info "Migration already exists, skipping creation"
+else
+    cat > "$MIGRATION_FILE" << 'PHPEOF'
 <?php
 
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\DB;
 
 return new class extends Migration
 {
     public function up(): void
     {
-        Schema::create('user_limits', function (Blueprint $table) {
-            $table->id();
-            $table->unsignedBigInteger('user_id')->unique();
-            $table->integer('max_ram')->default(0)->comment('Maximum RAM in MB');
-            $table->integer('max_disk')->default(0)->comment('Maximum Disk in MB');
-            $table->integer('max_cpu')->default(0)->comment('Maximum CPU in %');
-            $table->integer('max_servers')->default(0)->comment('Maximum servers count');
-            $table->timestamps();
+        if (!Schema::hasTable('user_limits')) {
+            Schema::create('user_limits', function (Blueprint $table) {
+                $table->id();
+                $table->unsignedBigInteger('user_id')->unique();
+                $table->integer('max_ram')->default(0)->comment('Maximum RAM in MB');
+                $table->integer('max_disk')->default(0)->comment('Maximum Disk in MB');
+                $table->integer('max_cpu')->default(0)->comment('Maximum CPU in %');
+                $table->integer('max_servers')->default(0)->comment('Maximum servers count');
+                $table->timestamps();
+            });
+        }
 
-            $table->foreign('user_id')->references('id')->on('users')->onDelete('cascade');
-        });
-
-        // Insert default limit for admin (unlimited)
-        DB::table('user_limits')->insert([
-            'user_id' => 1,
-            'max_ram' => 0, // 0 = unlimited
-            'max_disk' => 0,
-            'max_cpu' => 0,
-            'max_servers' => 0,
-            'created_at' => now(),
-            'updated_at' => now(),
-        ]);
+        // Insert default limit for admin (unlimited) if not exists
+        if (!DB::table('user_limits')->where('user_id', 1)->exists()) {
+            DB::table('user_limits')->insert([
+                'user_id' => 1,
+                'max_ram' => 0,
+                'max_disk' => 0,
+                'max_cpu' => 0,
+                'max_servers' => 0,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
     }
 
     public function down(): void
@@ -95,8 +103,8 @@ return new class extends Migration
 };
 PHPEOF
 
-handle_success "Migration created: $(basename $MIGRATION_FILE)"
-
+    handle_success "Migration created: $(basename $MIGRATION_FILE)"
+fi
 ##############################################################################
 # 1. CREATE USER LIMIT MODEL
 ##############################################################################
@@ -1267,18 +1275,23 @@ if [ -f "$KERNEL_PATH" ]; then
 fi
 
 ##############################################################################
-# RUN DATABASE MIGRATION
+# RUN DATABASE MIGRATION (SAFE MODE)
 ##############################################################################
 echo ""
-handle_info "Running database migration..."
+handle_info "Running database migration (safe mode)..."
 
 cd "${PTERODACTYL_PATH}" || exit 1
-if php artisan migrate --force 2>/dev/null; then
-    handle_success "Database migration completed"
-else
-    handle_error "Migration failed. Please run manually: php artisan migrate --force"
-fi
 
+# Cek apakah migration user_limits sudah pernah dijalankan
+if php artisan migrate:status | grep -q create_user_limits_table; then
+    handle_info "user_limits migration already applied, skipping"
+else
+    if php artisan migrate --path="$MIGRATION_FILE" --force; then
+        handle_success "user_limits migration completed"
+    else
+        handle_error "Migration failed. Please run manually: php artisan migrate --path=$MIGRATION_FILE --force"
+    fi
+fi
 ##############################################################################
 # CLEANUP & CACHE CLEAR
 ##############################################################################
