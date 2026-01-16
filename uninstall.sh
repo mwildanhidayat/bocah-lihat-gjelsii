@@ -1,69 +1,111 @@
 #!/bin/bash
 
-PTERO="/var/www/pterodactyl"
-TS=$(date +%Y-%m-%d-%H-%M-%S)
+##############################################################################
+# PTERODACTYL PROTECTION UNINSTALLER v3.0
+# Remove all protection system & restore backups
+##############################################################################
 
-echo "====================================="
-echo "🧹 UNINSTALL PTERODACTYL PROTECTION"
-echo "====================================="
+set -e
 
-# 1. Drop database table
-echo "[1] Dropping user_limits table..."
-mysql -u root -p panel -e "DROP TABLE IF EXISTS user_limits;"
+PTERODACTYL_PATH="/var/www/pterodactyl"
 
-# 2. Remove migration
-echo "[2] Removing migration files..."
-rm -f $PTERO/database/migrations/*create_user_limits_table.php
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
 
-# 3. Remove model
-echo "[3] Removing UserLimit model..."
-rm -f $PTERO/app/Models/UserLimit.php
+info() { echo -e "${YELLOW}[INFO] $1${NC}"; }
+ok() { echo -e "${GREEN}[OK] $1${NC}"; }
+err() { echo -e "${RED}[ERROR] $1${NC}"; }
 
-# 4. Remove service
-echo "[4] Removing UserLimitService..."
-rm -f $PTERO/app/Services/Users/UserLimitService.php
+echo ""
+echo "=========================================="
+echo "🧹 PTERODACTYL PROTECTION UNINSTALLER"
+echo "=========================================="
+echo ""
 
-# 5. Remove middleware
-echo "[5] Removing LimitValidationMiddleware..."
-rm -f $PTERO/app/Http/Middleware/LimitValidationMiddleware.php
+##############################################################################
+# 1. REMOVE PROTECTION SERVICE
+##############################################################################
+info "Removing ProtectionService..."
+rm -rf "${PTERODACTYL_PATH}/app/Services/Protection"
+ok "ProtectionService removed"
 
-# 6. Remove controller
-echo "[6] Removing LimitController..."
-rm -f $PTERO/app/Http/Controllers/Admin/LimitController.php
+##############################################################################
+# 2. REMOVE PROTECTION CONTROLLER
+##############################################################################
+info "Removing ProtectionController..."
+rm -f "${PTERODACTYL_PATH}/app/Http/Controllers/Admin/ProtectionController.php"
+ok "ProtectionController removed"
 
-# 7. Remove request
-echo "[7] Removing UpdateUserLimitRequest..."
-rm -f $PTERO/app/Http/Requests/Admin/UpdateUserLimitRequest.php
+##############################################################################
+# 3. RESTORE BACKUPS (ServerCreationService, API, Admin ServerController)
+##############################################################################
+info "Restoring backups..."
 
-# 8. Remove blade UI
-echo "[8] Removing blade UI..."
-rm -rf $PTERO/resources/views/admin/limits
+find "${PTERODACTYL_PATH}" -type f -name "*.bak_*" | while read file; do
+    original="${file%.bak_*}"
+    mv "$file" "$original"
+    echo "Restored: $original"
+done
 
-# 9. Restore routes
-if ls $PTERO/routes/admin.php.bak_* 1> /dev/null 2>&1; then
-  echo "[9] Restoring routes..."
-  cp $(ls -t $PTERO/routes/admin.php.bak_* | head -1) $PTERO/routes/admin.php
-fi
+ok "All backup files restored"
 
-# 10. Restore sidebar
-if ls $PTERO/resources/views/admin/partials/navigation.blade.php.bak_* 1> /dev/null 2>&1; then
-  echo "[10] Restoring sidebar..."
-  cp $(ls -t $PTERO/resources/views/admin/partials/navigation.blade.php.bak_* | head -1) \
-     $PTERO/resources/views/admin/partials/navigation.blade.php
-fi
+##############################################################################
+# 4. REMOVE CUSTOM 403 PAGE
+##############################################################################
+info "Removing custom 403 error page..."
+rm -f "${PTERODACTYL_PATH}/resources/views/errors/403.blade.php"
+ok "403 page removed"
 
-# 11. Restore Kernel
-if ls $PTERO/app/Http/Kernel.php.bak_* 1> /dev/null 2>&1; then
-  echo "[11] Restoring Kernel..."
-  cp $(ls -t $PTERO/app/Http/Kernel.php.bak_* | head -1) \
-     $PTERO/app/Http/Kernel.php
-fi
+##############################################################################
+# 5. REMOVE PROTECTION SETTINGS UI
+##############################################################################
+info "Removing protection settings UI..."
+rm -rf "${PTERODACTYL_PATH}/resources/views/admin/protection"
+ok "Protection UI removed"
 
-# 12. Clear cache
-echo "[12] Clearing cache..."
-cd $PTERO || exit
-php artisan optimize:clear
+##############################################################################
+# 6. REMOVE ROUTES
+##############################################################################
+ROUTES_FILE="${PTERODACTYL_PATH}/routes/base/admin.php"
 
-echo "====================================="
+info "Cleaning protection routes..."
+sed -i '/Protection Settings (Admin Only)/,/});/d' "$ROUTES_FILE"
+ok "Protection routes removed"
+
+##############################################################################
+# 7. REMOVE SIDEBAR MENU
+##############################################################################
+SIDEBAR_FILE="${PTERODACTYL_PATH}/resources/views/layouts/admin.blade.php"
+
+info "Removing sidebar menu..."
+sed -i "/admin.protection/d" "$SIDEBAR_FILE"
+ok "Sidebar menu removed"
+
+##############################################################################
+# 8. CLEAR CACHE
+##############################################################################
+info "Clearing cache..."
+cd "$PTERODACTYL_PATH"
+php artisan cache:clear || true
+php artisan config:clear || true
+php artisan view:clear || true
+ok "Cache cleared"
+
+##############################################################################
+# 9. PERMISSIONS
+##############################################################################
+chown -R www-data:www-data "$PTERODACTYL_PATH"
+
+##############################################################################
+# DONE
+##############################################################################
+echo ""
+echo "=========================================="
 echo "✅ UNINSTALL COMPLETE"
-echo "====================================="
+echo "=========================================="
+echo ""
+echo "All protection system has been removed."
+echo "Panel restored to original state."
+echo ""

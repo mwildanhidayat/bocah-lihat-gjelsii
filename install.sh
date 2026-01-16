@@ -1,22 +1,23 @@
 #!/bin/bash
 
 ##############################################################################
-# PTERODACTYL PROTECTION INSTALLER v3.0 - SERVER CREATION LIMITS
+# PTERODACTYL PROTECTION INSTALLER v3.1 - SERVER CREATION LIMITS
 # Date: 2026-01-17
-# Features: User Limits, Admin-Only UI, Custom 403 Page, API Protection
+# Fixed: Path errors, Route detection, Robust error handling
 ##############################################################################
 
-set -e
+set -euo pipefail  # Exit on error, undefined vars, pipe failures
 
 echo ""
 echo "=========================================="
-echo "🔐 PTERODACTYL PROTECTION INSTALLER v3.0"
+echo "🔐 PTERODACTYL PROTECTION INSTALLER v3.1"
 echo "=========================================="
 echo ""
 
 TIMESTAMP=$(date -u +"%Y%m%d_%H%M%S")
 PTERODACTYL_PATH="/var/www/pterodactyl"
 ERROR_COUNT=0
+SKIPPED_ITEMS=()
 
 # Color codes
 RED='\033[0;31m'
@@ -26,19 +27,50 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 # Functions
-handle_error() { echo -e "${RED}[ERROR] $1${NC}"; ERROR_COUNT=$((ERROR_COUNT + 1)); }
+handle_error() { 
+    echo -e "${RED}[ERROR] $1${NC}" 
+    ERROR_COUNT=$((ERROR_COUNT + 1))
+    SKIPPED_ITEMS+=("❌ $1")
+}
+
 handle_success() { echo -e "${GREEN}[OK] $1${NC}"; }
 handle_info() { echo -e "${YELLOW}[INFO] $1${NC}"; }
 handle_title() { echo -e "${BLUE}[INSTALL] $1${NC}"; }
+handle_warning() { echo -e "${YELLOW}[WARNING] $1${NC}"; }
+
+##############################################################################
+# DETECT ROUTES FILE LOCATION
+##############################################################################
+handle_title "Detecting routes file location..."
+
+ROUTES_FILES=(
+    "${PTERODACTYL_PATH}/routes/base/admin.php"
+    "${PTERODACTYL_PATH}/routes/admin.php"
+    "${PTERODACTYL_PATH}/routes/web.php"
+)
+
+ROUTES_FILE=""
+for file in "${ROUTES_FILES[@]}"; do
+    if [[ -f "$file" ]]; then
+        ROUTES_FILE="$file"
+        handle_success "Found routes at: $file"
+        break
+    fi
+done
+
+if [[ -z "$ROUTES_FILE" ]]; then
+    handle_error "Could not find routes file. Manual route addition required."
+    SKIPPED_ITEMS+=("⚠️  Manual step needed: Add protection routes manually")
+fi
 
 ##############################################################################
 # 1. PROTECTION SERVICE (Core Logic)
 ##############################################################################
 handle_title "Installing ProtectionService.php..."
 REMOTE_PATH="${PTERODACTYL_PATH}/app/Services/Protection/ProtectionService.php"
-mkdir -p "$(dirname "$REMOTE_PATH")"
 
-cat > "$REMOTE_PATH" << 'PHPEOF'
+if mkdir -p "$(dirname "$REMOTE_PATH")" 2>/dev/null; then
+    cat > "$REMOTE_PATH" << 'PHPEOF'
 <?php
 
 namespace Pterodactyl\Services\Protection;
@@ -105,8 +137,11 @@ class ProtectionService
     }
 }
 PHPEOF
-chmod 644 "$REMOTE_PATH"
-handle_success "ProtectionService.php installed"
+    chmod 644 "$REMOTE_PATH"
+    handle_success "ProtectionService.php installed"
+else
+    handle_error "Failed to create directory for ProtectionService"
+fi
 
 ##############################################################################
 # 2. PROTECTION CONTROLLER (Admin UI)
@@ -180,7 +215,7 @@ chmod 644 "$REMOTE_PATH"
 handle_success "ProtectionController.php installed"
 
 ##############################################################################
-# 3. MODIFIED SERVER CREATION SERVICE (With Validation)
+# 3. MODIFIED SERVER CREATION SERVICE
 ##############################################################################
 handle_title "Installing ServerCreationService.php..."
 REMOTE_PATH="${PTERODACTYL_PATH}/app/Services/Servers/ServerCreationService.php"
@@ -191,7 +226,6 @@ if [ -f "$REMOTE_PATH" ]; then
     handle_success "Backup created: $BACKUP_PATH"
 fi
 
-# Create modified version with protection
 cat > "$REMOTE_PATH" << 'PHPEOF'
 <?php
 
@@ -260,7 +294,7 @@ chmod 644 "$REMOTE_PATH"
 handle_success "ServerCreationService.php installed with limits"
 
 ##############################################################################
-# 4. API SERVER STORE CONTROLLER (API Protection)
+# 4. API SERVER STORE CONTROLLER
 ##############################################################################
 handle_title "Installing Api/Client/ServerStoreController.php..."
 REMOTE_PATH="${PTERODACTYL_PATH}/app/Http/Controllers/Api/Client/ServerStoreController.php"
@@ -318,9 +352,9 @@ handle_success "Api ServerStoreController installed"
 ##############################################################################
 handle_title "Installing custom 403 error page..."
 REMOTE_PATH="${PTERODACTYL_PATH}/resources/views/errors/403.blade.php"
-mkdir -p "$(dirname "$REMOTE_PATH")"
 
-cat > "$REMOTE_PATH" << 'PHPEOF'
+if mkdir -p "$(dirname "$REMOTE_PATH")" 2>/dev/null; then
+    cat > "$REMOTE_PATH" << 'PHPEOF'
 @extends('templates/core')
 @section('title', 'Access Denied')
 @section('content')
@@ -371,17 +405,20 @@ cat > "$REMOTE_PATH" << 'PHPEOF'
 </div>
 @endsection
 PHPEOF
-chmod 644 "$REMOTE_PATH"
-handle_success "Custom 403 page installed"
+    chmod 644 "$REMOTE_PATH"
+    handle_success "Custom 403 page installed"
+else
+    handle_error "Failed to create errors directory for 403 page"
+fi
 
 ##############################################################################
 # 6. PROTECTION SETTINGS UI VIEW
 ##############################################################################
 handle_title "Installing protection settings UI..."
 REMOTE_PATH="${PTERODACTYL_PATH}/resources/views/admin/protection/index.blade.php"
-mkdir -p "$(dirname "$REMOTE_PATH")"
 
-cat > "$REMOTE_PATH" << 'PHPEOF'
+if mkdir -p "$(dirname "$REMOTE_PATH")" 2>/dev/null; then
+    cat > "$REMOTE_PATH" << 'PHPEOF'
 @extends('layouts.admin')
 @section('title', 'Protection Settings')
 @section('content')
@@ -511,31 +548,46 @@ cat > "$REMOTE_PATH" << 'PHPEOF'
 </div>
 @endsection
 PHPEOF
-chmod 644 "$REMOTE_PATH"
-handle_success "Protection settings UI installed"
-
-##############################################################################
-# 7. ROUTES INJECTION (Add to web.php)
-##############################################################################
-handle_title "Adding protection routes..."
-ROUTES_FILE="${PTERODACTYL_PATH}/routes/base/admin.php"
-ROUTES_BACKUP="${ROUTES_FILE}.bak_${TIMESTAMP}"
-
-if [ -f "$ROUTES_FILE" ]; then
-    cp "$ROUTES_FILE" "$ROUTES_BACKUP"
-    handle_success "Routes backup created: $ROUTES_BACKUP"
+    chmod 644 "$REMOTE_PATH"
+    handle_success "Protection settings UI installed"
+else
+    handle_error "Failed to create admin/protection directory"
 fi
 
-# Add protection routes before the last });
-cat << 'PHPEOF' >> "$ROUTES_FILE"
+##############################################################################
+# 7. ROUTES INJECTION (Robust with error handling)
+##############################################################################
+handle_title "Adding protection routes..."
+if [[ -n "$ROUTES_FILE" ]]; then
+    ROUTES_BACKUP="${ROUTES_FILE}.bak_${TIMESTAMP}"
+    cp "$ROUTES_FILE" "$ROUTES_BACKUP"
+    handle_success "Routes backup created: $ROUTES_BACKUP"
 
-// Protection Settings (Admin Only)
+    # Check if routes already exist
+    if grep -q "admin.protection" "$ROUTES_FILE"; then
+        handle_warning "Routes already exist, skipping duplication"
+    else
+        # Add routes to the appropriate file
+        cat << 'PHPEOF' >> "$ROUTES_FILE"
+
+// Protection Settings (Admin Only) - Added by v3.1 Installer
+use Pterodactyl\Http\Controllers\Admin\ProtectionController;
+
 Route::group(['prefix' => 'protection'], function () {
     Route::get('/', [ProtectionController::class, 'index'])->name('admin.protection');
     Route::post('/update', [ProtectionController::class, 'update'])->name('admin.protection.update');
 });
 PHPEOF
-handle_success "Protection routes added"
+        handle_success "Protection routes added to $ROUTES_FILE"
+    fi
+else
+    handle_error "No routes file found to modify"
+    SKIPPED_ITEMS+=("⚠️  MANUAL STEP: Add these routes to your admin routes file:")
+    SKIPPED_ITEMS+=("   Route::group(['prefix' => 'protection'], function () {")
+    SKIPPED_ITEMS+=("       Route::get('/', [ProtectionController::class, 'index'])->name('admin.protection');")
+    SKIPPED_ITEMS+=("       Route::post('/update', [ProtectionController::class, 'update'])->name('admin.protection.update');")
+    SKIPPED_ITEMS+=("   });")
+fi
 
 ##############################################################################
 # 8. MODIFIED ADMIN SERVER CREATION CONTROLLER
@@ -545,7 +597,7 @@ REMOTE_PATH="${PTERODACTYL_PATH}/app/Http/Controllers/Admin/Servers/ServerContro
 BACKUP_PATH="${REMOTE_PATH}.bak_${TIMESTAMP}"
 
 if [ -f "$REMOTE_PATH" ]; then
-    cp "$REMOTE_PATH" "$BACKUP_PATH"
+    cp "$REMOTE_PATH" "$BACKUP_BACKUP"
     handle_success "Backup created: $BACKUP_PATH"
 fi
 
@@ -658,20 +710,27 @@ chmod 644 "$REMOTE_PATH"
 handle_success "Admin ServerController installed with protection"
 
 ##############################################################################
-# 9. MENU ITEM (Add to admin sidebar)
+# 9. MENU ITEM (Add to admin sidebar with fallback)
 ##############################################################################
 handle_title "Adding protection menu..."
 SIDEBAR_FILE="${PTERODACTYL_PATH}/resources/views/layouts/admin.blade.php"
 if [ -f "$SIDEBAR_FILE" ]; then
     cp "$SIDEBAR_FILE" "$SIDEBAR_FILE.bak_${TIMESTAMP}"
     
-    # Add menu item before Settings
-    sed -i '/<li><a href="{{ route('admin.settings') }}">/,/<\/li>/i \
-                <li><a href="{{ route('"'"'admin.protection'"'"') }}"><i class="fa fa-shield"></i> <span>Protection Settings</span></a></li>' "$SIDEBAR_FILE"
-    
-    handle_success "Protection menu added to sidebar"
+    # Check if menu already exists
+    if grep -q "admin.protection" "$SIDEBAR_FILE"; then
+        handle_warning "Menu item already exists, skipping duplication"
+    else
+        # Add menu item before Settings (using more reliable sed pattern)
+        sed -i.bak '/route.*admin\.settings/i\
+                <li><a href="{{ route('"'"'admin.protection'"'"') }}"><i class="fa fa-shield"></i> <span>Protection Settings</span></a></li>
+' "$SIDEBAR_FILE" && handle_success "Protection menu added to sidebar" || \
+            handle_warning "Could not auto-add menu item, add manually"
+    fi
 else
-    handle_info "Sidebar file not found, skipping menu addition"
+    handle_warning "Sidebar file not found at $SIDEBAR_FILE"
+    SKIPPED_ITEMS+=("⚠️  MANUAL STEP: Add menu item to admin sidebar:")
+    SKIPPED_ITEMS+=('   <li><a href="{{ route('admin.protection') }}"><i class="fa fa-shield"></i> <span>Protection Settings</span></a></li>')
 fi
 
 ##############################################################################
@@ -686,17 +745,30 @@ php artisan config:clear 2>/dev/null && handle_success "Config cache cleared" ||
 php artisan view:clear 2>/dev/null && handle_success "View cache cleared" || handle_info "View clear skipped"
 
 # Set proper permissions
+handle_info "Setting permissions..."
 chown -R www-data:www-data "${PTERODACTYL_PATH}/app/Services/Protection" 2>/dev/null || true
 chown -R www-data:www-data "${PTERODACTYL_PATH}/app/Http/Controllers/Admin/ProtectionController.php" 2>/dev/null || true
+handle_success "Permissions set (best effort)"
 
 ##############################################################################
-# SUMMARY
+# SUMMARY & MANUAL STEPS
 ##############################################################################
 echo ""
 echo "=========================================="
-echo "✅ INSTALLATION COMPLETE - v3.0"
+echo "✅ INSTALLATION COMPLETE - v3.1"
 echo "=========================================="
 echo ""
+
+if [ ${#SKIPPED_ITEMS[@]} -eq 0 ]; then
+    echo "🎉 Perfect! All items installed automatically."
+else
+    echo "⚠️  Some items require manual attention:"
+    for item in "${SKIPPED_ITEMS[@]}"; do
+        echo "   $item"
+    done
+    echo ""
+fi
+
 echo "📋 FEATURES INSTALLED:"
 echo "   ✓ Server Creation Limits (RAM/Disk/CPU ≠ 0)"
 echo "   ✓ Protection Service for validation"
@@ -704,34 +776,33 @@ echo "   ✓ Admin-Only Protection Settings UI"
 echo "   ✓ Custom 403 Error Page with modern design"
 echo "   ✓ API Protection for server creation"
 echo "   ✓ User-specific limit enforcement"
-echo "   ✓ Protection Settings menu in admin panel"
 echo ""
 echo "🛡️ PROTECTION STATUS:"
 echo "   ✓ Only Admin ID 1 can access Protection Settings"
 echo "   ✓ Non-admins cannot create servers with 0 values"
 echo "   ✓ All API endpoints protected"
 echo "   ✓ Custom 403 messages displayed"
-echo "   ✓ UI completely hidden from non-admin users"
 echo ""
 echo "🔗 ACCESS PROTECTION SETTINGS:"
 echo "   URL: /admin/protection"
 echo "   Access: Main Administrator Only"
 echo ""
 echo "📂 BACKUP LOCATION:"
-echo "   All original files backed up with pattern:"
-echo "   [filename].bak_${TIMESTAMP}"
+echo "   Pattern: [filename].bak_${TIMESTAMP}"
 echo ""
-echo "⚠️ IMPORTANT:"
-echo "   • Run: sudo chown -R www-data:www-data ${PTERODACTYL_PATH}"
-echo "   • Clear browser cache after installation"
-echo "   • Test with non-admin account to verify limits"
+echo "⚠️ FINAL STEPS:"
+echo "   1. Run: sudo chown -R www-data:www-data ${PTERODACTYL_PATH}"
+echo "   2. Clear browser cache"
+echo "   3. Test with non-admin account"
+echo "   4. Check Laravel logs if issues persist"
 echo ""
 echo "=========================================="
 
 if [ $ERROR_COUNT -eq 0 ]; then
-    handle_success "All systems protected successfully!"
+    handle_success "All critical systems protected successfully!"
     exit 0
 else
-    handle_error "Installation completed with $ERROR_COUNT error(s)"
+    handle_error "Installation completed with $ERROR_COUNT critical error(s)"
+    handle_info "Please fix errors above and re-run if needed"
     exit 1
 fi
