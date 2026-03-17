@@ -1,1096 +1,201 @@
 #!/bin/bash
 
-##############################################################################
-# INSTALLER PROTEKSI PTERODACTYL - VERSI 2.0 LENGKAP AMAN (FULL FIX)
-# Date: 2026-01-14
-# Author: Safety Team
-# Description: Proteksi Admin ID 1 - Tanpa 500 Error, White Screen, atau Bug
-# Fix: User 500 Error + Custom 403 Messages
-##############################################################################
+# Pterodactyl Protection Installer
+# Protect By @WiL Official
+# Version: 1.0
 
 set -e
 
-echo ""
-echo "=========================================="
-echo "🔐 PTERODACTYL PROTECTION INSTALLER v2.0"
-echo "=========================================="
-echo ""
-
-TIMESTAMP=$(date -u +"%Y-%m-%d-%H-%M-%S")
-PTERODACTYL_PATH="/var/www/pterodactyl"
-ERROR_COUNT=0
-
-# Color codes
+# Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
 NC='\033[0m'
 
-# Function untuk error handling
-handle_error() {
-    echo -e "${RED}[ERROR] $1${NC}"
-    ERROR_COUNT=$((ERROR_COUNT + 1))
+# Configuration
+PANEL_DIR="/var/www/pterodactyl"
+BACKUP_DIR="/root/pterodactyl-backup-$(date +%Y%m%d-%H%M%S)"
+GITHUB_RAW="https://raw.githubusercontent.com/YOUR_USERNAME/pterodactyl-protect/main/Panel-protek"
+LOG_FILE="/root/pterodactyl-protect-install.log"
+
+# Log function
+log_message() {
+    echo -e "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
 }
 
-# Function untuk success
-handle_success() {
-    echo -e "${GREEN}[OK] $1${NC}"
+print_status() { echo -e "${BLUE}[INFO]${NC} $1"; }
+print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
+print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
+
+# Check root
+check_root() {
+    if [[ $EUID -ne 0 ]]; then
+        print_error "Jalankan sebagai root!"
+        exit 1
+    fi
 }
 
-# Function untuk info
-handle_info() {
-    echo -e "${YELLOW}[INFO] $1${NC}"
+# Check panel
+check_panel() {
+    if [[ ! -d "$PANEL_DIR" ]]; then
+        print_error "Panel tidak ditemukan di $PANEL_DIR"
+        exit 1
+    fi
 }
 
-##############################################################################
-# 1. ServerDeletionService. php
-##############################################################################
-echo ""
-handle_info "[1/9] Installing ServerDeletionService.php..."
-
-REMOTE_PATH="${PTERODACTYL_PATH}/app/Services/Servers/ServerDeletionService.php"
-BACKUP_PATH="${REMOTE_PATH}.bak_${TIMESTAMP}"
-
-if [ -f "$REMOTE_PATH" ]; then
-    cp "$REMOTE_PATH" "$BACKUP_PATH"
-    handle_success "Backup created:  $BACKUP_PATH"
-fi
-
-mkdir -p "$(dirname "$REMOTE_PATH")"
-
-cat > "$REMOTE_PATH" << 'PHPEOF'
-<?php
-
-namespace Pterodactyl\Services\Servers;
-
-use Illuminate\Support\Facades\Auth;
-use Pterodactyl\Exceptions\DisplayException;
-use Illuminate\Http\Response;
-use Pterodactyl\Models\Server;
-use Illuminate\Support\Facades\Log;
-use Illuminate\Database\ConnectionInterface;
-use Pterodactyl\Repositories\Wings\DaemonServerRepository;
-use Pterodactyl\Services\Databases\DatabaseManagementService;
-use Pterodactyl\Exceptions\Http\Connection\DaemonConnectionException;
-
-class ServerDeletionService
-{
-    protected bool $force = false;
-
-    public function __construct(
-        private ConnectionInterface $connection,
-        private DaemonServerRepository $daemonServerRepository,
-        private DatabaseManagementService $databaseManagementService
-    ) {
-    }
-
-    public function withForce(bool $bool = true): self
-    {
-        $this->force = $bool;
-        return $this;
-    }
-
-    /**
-     * Delete a server from the panel and remove any associated databases. 
-     * @throws \Throwable
-     */
-    public function handle(Server $server): void
-    {
-        $user = Auth::user();
-
-        if ($user && $user->id !== 1) {
-            $ownerId = $server->owner_id ??  $server->user_id;
-            if ($ownerId && $ownerId !== $user->id) {
-                abort(403);
-            }
-        }
-
-        try {
-            $this->daemonServerRepository->setServer($server)->delete();
-        } catch (DaemonConnectionException $exception) {
-            if (! $this->force && $exception->getStatusCode() !== Response::HTTP_NOT_FOUND) {
-                throw $exception;
-            }
-            Log::warning($exception);
-        }
-
-        $this->connection->transaction(function () use ($server) {
-            foreach ($server->databases as $database) {
-                try {
-                    $this->databaseManagementService->delete($database);
-                } catch (\Exception $exception) {
-                    if (!$this->force) {
-                        throw $exception;
-                    }
-                    $database->delete();
-                    Log:: warning($exception);
-                }
-            }
-            $server->delete();
-        });
-    }
+# Create backup
+create_backup() {
+    print_status "Membuat backup..."
+    mkdir -p "$BACKUP_DIR"
+    
+    # Backup semua file yang akan diganti
+    cp "$PANEL_DIR/app/Http/Controllers/Admin/UserController.php" "$BACKUP_DIR/" 2>/dev/null || true
+    cp "$PANEL_DIR/app/Http/Controllers/Api/Client/TwoFactorController.php" "$BACKUP_DIR/" 2>/dev/null || true
+    cp "$PANEL_DIR/app/Services/Servers/StartupModificationService.php" "$BACKUP_DIR/" 2>/dev/null || true
+    cp "$PANEL_DIR/app/Http/Controllers/Admin/Servers/ServerTransferController.php" "$BACKUP_DIR/" 2>/dev/null || true
+    cp "$PANEL_DIR/app/Http/Controllers/Admin/ServersController.php" "$BACKUP_DIR/" 2>/dev/null || true
+    cp "$PANEL_DIR/app/Services/Servers/ServerDeletionService.php" "$BACKUP_DIR/" 2>/dev/null || true
+    cp "$PANEL_DIR/app/Http/Controllers/Admin/Servers/ServerController.php" "$BACKUP_DIR/" 2>/dev/null || true
+    cp "$PANEL_DIR/app/Services/Servers/ReinstallServerService.php" "$BACKUP_DIR/" 2>/dev/null || true
+    cp "$PANEL_DIR/app/Http/Controllers/Admin/Nodes/NodeController.php" "$BACKUP_DIR/" 2>/dev/null || true
+    cp "$PANEL_DIR/app/Http/Controllers/Admin/Nests/NestController.php" "$BACKUP_DIR/" 2>/dev/null || true
+    cp "$PANEL_DIR/app/Http/Controllers/Admin/MountController.php" "$BACKUP_DIR/" 2>/dev/null || true
+    cp "$PANEL_DIR/app/Http/Controllers/Admin/LocationController.php" "$BACKUP_DIR/" 2>/dev/null || true
+    cp "$PANEL_DIR/app/Http/Controllers/Admin/Settings/IndexController.php" "$BACKUP_DIR/" 2>/dev/null || true
+    cp "$PANEL_DIR/app/Http/Controllers/Api/Client/Servers/FileController.php" "$BACKUP_DIR/" 2>/dev/null || true
+    cp "$PANEL_DIR/app/Services/Servers/DetailsModificationService.php" "$BACKUP_DIR/" 2>/dev/null || true
+    cp "$PANEL_DIR/app/Services/Databases/DatabaseManagementService.php" "$BACKUP_DIR/" 2>/dev/null || true
+    cp "$PANEL_DIR/app/Http/Controllers/Admin/DatabaseController.php" "$BACKUP_DIR/" 2>/dev/null || true
+    cp "$PANEL_DIR/app/Http/Controllers/Api/Client/Servers/ClientServerController.php" "$BACKUP_DIR/" 2>/dev/null || true
+    cp "$PANEL_DIR/app/Services/Servers/BuildModificationService.php" "$BACKUP_DIR/" 2>/dev/null || true
+    cp "$PANEL_DIR/app/Http/Controllers/Api/Client/ApiKeyController.php" "$BACKUP_DIR/" 2>/dev/null || true
+    cp "$PANEL_DIR/app/Http/Controllers/Admin/ApiController.php" "$BACKUP_DIR/" 2>/dev/null || true
+    cp "$PANEL_DIR/resources/views/layouts/admin.blade.php" "$BACKUP_DIR/" 2>/dev/null || true
+    
+    print_success "Backup di: $BACKUP_DIR"
 }
-PHPEOF
 
-chmod 644 "$REMOTE_PATH"
-handle_success "ServerDeletionService.php installed"
-
-##############################################################################
-# 2. UserController.php (FIXED - NO 500 ERROR)
-##############################################################################
-echo ""
-handle_info "[2/9] Installing UserController.php (FIXED)..."
-
-REMOTE_PATH="${PTERODACTYL_PATH}/app/Http/Controllers/Admin/UserController.php"
-BACKUP_PATH="${REMOTE_PATH}.bak_${TIMESTAMP}"
-
-if [ -f "$REMOTE_PATH" ]; then
-    cp "$REMOTE_PATH" "$BACKUP_PATH"
-    handle_success "Backup created: $BACKUP_PATH"
-fi
-
-mkdir -p "$(dirname "$REMOTE_PATH")"
-
-cat > "$REMOTE_PATH" << 'PHPEOF'
-<?php
-
-namespace Pterodactyl\Http\Controllers\Admin;
-
-use Illuminate\View\View;
-use Illuminate\Http\Request;
-use Pterodactyl\Models\User;
-use Pterodactyl\Models\Model;
-use Illuminate\Support\Collection;
-use Illuminate\Http\RedirectResponse;
-use Illuminate\Support\Facades\Auth;
-use Prologue\Alerts\AlertsMessageBag;
-use Spatie\QueryBuilder\QueryBuilder;
-use Illuminate\View\Factory as ViewFactory;
-use Pterodactyl\Exceptions\DisplayException;
-use Pterodactyl\Http\Controllers\Controller;
-use Illuminate\Contracts\Translation\Translator;
-use Pterodactyl\Services\Users\UserUpdateService;
-use Pterodactyl\Traits\Helpers\AvailableLanguages;
-use Pterodactyl\Services\Users\UserCreationService;
-use Pterodactyl\Services\Users\UserDeletionService;
-use Pterodactyl\Http\Requests\Admin\UserFormRequest;
-use Pterodactyl\Http\Requests\Admin\NewUserFormRequest;
-use Pterodactyl\Contracts\Repository\UserRepositoryInterface;
-
-class UserController extends Controller
-{
-    use AvailableLanguages;
-
-    public function __construct(
-        protected AlertsMessageBag $alert,
-        protected UserCreationService $creationService,
-        protected UserDeletionService $deletionService,
-        protected Translator $translator,
-        protected UserUpdateService $updateService,
-        protected UserRepositoryInterface $repository,
-        protected ViewFactory $view
-    ) {
-    }
-
-    public function index(Request $request): View
-    {
-        $users = QueryBuilder::for(
-            User::query()->select('users.*')
-                ->selectRaw('COUNT(DISTINCT(subusers.id)) as subuser_of_count')
-                ->selectRaw('COUNT(DISTINCT(servers.id)) as servers_count')
-                ->leftJoin('subusers', 'subusers.user_id', '=', 'users.id')
-                ->leftJoin('servers', 'servers.owner_id', '=', 'users.id')
-                ->groupBy('users.id')
-        )
-            ->allowedFilters(['username', 'email', 'uuid'])
-            ->allowedSorts(['id', 'uuid'])
-            ->paginate(50);
-
-        return $this->view->make('admin.users.index', ['users' => $users]);
-    }
-
-    public function create(): View
-    {
-        return $this->view->make('admin.users.new', [
-            'languages' => $this->getAvailableLanguages(true),
-        ]);
-    }
-
-    public function view(User $user): View
-    {
-        return $this->view->make('admin.users.view', [
-            'user' => $user,
-            'languages' => $this->getAvailableLanguages(true),
-        ]);
-    }
-
-    public function delete(Request $request, User $user): RedirectResponse
-    {
-        if ($request->user()->id !== 1) {
-            abort(403);
-        }
-
-        if ($request->user()->id === $user->id) {
-            throw new DisplayException($this->translator->get('admin/user. exceptions.user_has_servers'));
-        }
-
-        $this->deletionService->handle($user);
-        return redirect()->route('admin.users');
-    }
-
-    public function store(NewUserFormRequest $request): RedirectResponse
-    {
-        $user = $this->creationService->handle($request->normalize());
-        $this->alert->success($this->translator->get('admin/user.notices.account_created'))->flash();
-        return redirect()->route('admin.users.view', $user->id);
-    }
-
-    public function update(UserFormRequest $request, User $user): RedirectResponse
-    {
-        if ($request->user()->id !== 1) {
-            $restrictedFields = ['email', 'first_name', 'last_name', 'password'];
-            foreach ($restrictedFields as $field) {
-                if ($request->filled($field)) {
-                    abort(403);
-                }
-            }
-        }
-
-        $this->updateService
-            ->setUserLevel(User::USER_LEVEL_ADMIN)
-            ->handle($user, $request->normalize());
-
-        $this->alert->success(trans('admin/user.notices.account_updated'))->flash();
-        return redirect()->route('admin.users.view', $user->id);
-    }
-
-    public function json(Request $request): Model|Collection
-    {
-        $users = QueryBuilder::for(User::query())->allowedFilters(['email'])->paginate(25);
-
-        if ($request->query('user_id')) {
-            $user = User::query()->findOrFail($request->input('user_id'));
-            $user->md5 = md5(strtolower($user->email));
-            return $user;
-        }
-
-        return $users->map(function ($item) {
-            $item->md5 = md5(strtolower($item->email));
-            return $item;
-        });
-    }
+# Download and install file
+install_file() {
+    local filename="$1"
+    local destination="$2"
+    
+    print_status "Downloading $filename..."
+    
+    if curl -s -f "$GITHUB_RAW/$filename" -o "$destination"; then
+        print_success "✓ $filename terinstall"
+        chmod 644 "$destination"
+        chown www-data:www-data "$destination" 2>/dev/null || chown nginx:nginx "$destination" 2>/dev/null
+    else
+        print_error "✗ Gagal download $filename"
+        return 1
+    fi
 }
-PHPEOF
 
-chmod 644 "$REMOTE_PATH"
-handle_success "UserController.php installed (FIXED)"
-
-##############################################################################
-# 3. LocationController.php
-##############################################################################
-echo ""
-handle_info "[3/9] Installing LocationController.php..."
-
-REMOTE_PATH="${PTERODACTYL_PATH}/app/Http/Controllers/Admin/LocationController.php"
-BACKUP_PATH="${REMOTE_PATH}.bak_${TIMESTAMP}"
-
-if [ -f "$REMOTE_PATH" ]; then
-    cp "$REMOTE_PATH" "$BACKUP_PATH"
-    handle_success "Backup created: $BACKUP_PATH"
-fi
-
-mkdir -p "$(dirname "$REMOTE_PATH")"
-
-cat > "$REMOTE_PATH" << 'PHPEOF'
-<?php
-
-namespace Pterodactyl\Http\Controllers\Admin;
-
-use Illuminate\View\View;
-use Illuminate\Http\RedirectResponse;
-use Illuminate\Support\Facades\Auth;
-use Pterodactyl\Models\Location;
-use Prologue\Alerts\AlertsMessageBag;
-use Illuminate\View\Factory as ViewFactory;
-use Pterodactyl\Exceptions\DisplayException;
-use Pterodactyl\Http\Controllers\Controller;
-use Pterodactyl\Http\Requests\Admin\LocationFormRequest;
-use Pterodactyl\Services\Locations\LocationUpdateService;
-use Pterodactyl\Services\Locations\LocationCreationService;
-use Pterodactyl\Services\Locations\LocationDeletionService;
-use Pterodactyl\Contracts\Repository\LocationRepositoryInterface;
-
-class LocationController extends Controller
-{
-    public function __construct(
-        protected AlertsMessageBag $alert,
-        protected LocationCreationService $creationService,
-        protected LocationDeletionService $deletionService,
-        protected LocationRepositoryInterface $repository,
-        protected LocationUpdateService $updateService,
-        protected ViewFactory $view
-    ) {
-    }
-
-    public function index(): View
-    {
-        if (Auth::user()->id !== 1) {
-            abort(403, '⚠️ ᴀᴋꜱᴇꜱ ᴅɪᴛᴏʟᴀᴋ: ʜᴀɴʏᴀ ᴛᴀᴄᴏ ʏᴀɴɢ ʙɪꜱᴀ ᴀᴋꜱᴇꜱ');
-        }
-
-        return $this->view->make('admin.locations.index', [
-            'locations' => $this->repository->getAllWithDetails(),
-        ]);
-    }
-
-    public function view(int $id): View
-    {
-        if (Auth::user()->id !== 1) {
-            abort(403, '⚠️ ᴀᴋꜱᴇꜱ ᴅɪᴛᴏʟᴀᴋ: ʜᴀɴʏᴀ ᴛᴀᴄᴏ ʏᴀɴɢ ʙɪꜱᴀ ᴀᴋꜱᴇꜱ');
-        }
-
-        return $this->view->make('admin.locations.view', [
-            'location' => $this->repository->getWithNodes($id),
-        ]);
-    }
-
-    public function create(LocationFormRequest $request): RedirectResponse
-    {
-        if ($request->user()->id !== 1) {
-            abort(403, '⚠️ ᴀᴋꜱᴇꜱ ᴅɪᴛᴏʟᴀᴋ: ʜᴀɴʏᴀ ᴛᴀᴄᴏ ʏᴀɴɢ ʙɪꜱᴀ ᴀᴋꜱᴇꜱ');
-        }
-
-        $location = $this->creationService->handle($request->normalize());
-        $this->alert->success('Location was created successfully. ')->flash();
-        return redirect()->route('admin.locations.view', $location->id);
-    }
-
-    public function update(LocationFormRequest $request, Location $location): RedirectResponse
-    {
-        if ($request->user()->id !== 1) {
-            abort(403, '⚠️ ᴀᴋꜱᴇꜱ ᴅɪᴛᴏʟᴀᴋ: ʜᴀɴʏᴀ ᴛᴀᴄᴏ ʏᴀɴɢ ʙɪꜱᴀ ᴀᴋꜱᴇꜱ');
-        }
-
-        if ($request->input('action') === 'delete') {
-            return $this->delete($location);
-        }
-
-        $this->updateService->handle($location->id, $request->normalize());
-        $this->alert->success('Location was updated successfully.')->flash();
-        return redirect()->route('admin.locations.view', $location->id);
-    }
-
-    public function delete(Location $location): RedirectResponse
-    {
-        if (Auth::user()->id !== 1) {
-            abort(403, '⚠️ ᴀᴋꜱᴇꜱ ᴅɪᴛᴏʟᴀᴋ: ʜᴀɴʏᴀ ᴛᴀᴄᴏ ʏᴀɴɢ ʙɪꜱᴀ ᴀᴋꜱᴇꜱ');
-        }
-
-        try {
-            $this->deletionService->handle($location->id);
-            return redirect()->route('admin.locations');
-        } catch (DisplayException $ex) {
-            $this->alert->danger($ex->getMessage())->flash();
-        }
-
-        return redirect()->route('admin.locations. view', $location->id);
-    }
+# Main installation
+main() {
+    echo -e "${BLUE}"
+    echo "╔══════════════════════════════════════════╗"
+    echo "║   Pterodactyl Protection Installer       ║"
+    echo "║        Protect By @WiL Official          ║"
+    echo "╚══════════════════════════════════════════╝"
+    echo -e "${NC}"
+    
+    check_root
+    check_panel
+    create_backup
+    
+    print_status "Memulai instalasi..."
+    
+    # Install Controllers
+    print_status "Installing Controllers..."
+    install_file "UserController.php" "$PANEL_DIR/app/Http/Controllers/Admin/UserController.php"
+    install_file "TwoFactorController.php" "$PANEL_DIR/app/Http/Controllers/Api/Client/TwoFactorController.php"
+    install_file "ServerTransferController.php" "$PANEL_DIR/app/Http/Controllers/Admin/Servers/ServerTransferController.php"
+    install_file "ServersController.php" "$PANEL_DIR/app/Http/Controllers/Admin/ServersController.php"
+    install_file "ServerController.php" "$PANEL_DIR/app/Http/Controllers/Admin/Servers/ServerController.php"
+    install_file "NodeController.php" "$PANEL_DIR/app/Http/Controllers/Admin/Nodes/NodeController.php"
+    install_file "NestController.php" "$PANEL_DIR/app/Http/Controllers/Admin/Nests/NestController.php"
+    install_file "MountController.php" "$PANEL_DIR/app/Http/Controllers/Admin/MountController.php"
+    install_file "LocationController.php" "$PANEL_DIR/app/Http/Controllers/Admin/LocationController.php"
+    install_file "IndexController.php" "$PANEL_DIR/app/Http/Controllers/Admin/Settings/IndexController.php"
+    install_file "FileController.php" "$PANEL_DIR/app/Http/Controllers/Api/Client/Servers/FileController.php"
+    install_file "DatabaseController.php" "$PANEL_DIR/app/Http/Controllers/Admin/DatabaseController.php"
+    install_file "ClientServerController.php" "$PANEL_DIR/app/Http/Controllers/Api/Client/Servers/ClientServerController.php"
+    install_file "ApiKeyController.php" "$PANEL_DIR/app/Http/Controllers/Api/Client/ApiKeyController.php"
+    install_file "ApiController.php" "$PANEL_DIR/app/Http/Controllers/Admin/ApiController.php"
+    
+    # Install Services
+    print_status "Installing Services..."
+    install_file "StartupModificationService.php" "$PANEL_DIR/app/Services/Servers/StartupModificationService.php"
+    install_file "ServerDeletionService.php" "$PANEL_DIR/app/Services/Servers/ServerDeletionService.php"
+    install_file "ReinstallServerService.php" "$PANEL_DIR/app/Services/Servers/ReinstallServerService.php"
+    install_file "DetailsModificationService.php" "$PANEL_DIR/app/Services/Servers/DetailsModificationService.php"
+    install_file "DatabaseManagementService.php" "$PANEL_DIR/app/Services/Databases/DatabaseManagementService.php"
+    install_file "BuildModificationService.php" "$PANEL_DIR/app/Services/Servers/BuildModificationService.php"
+    
+    # Install Blade View
+    print_status "Installing Blade View..."
+    install_file "admin.blade.php" "$PANEL_DIR/resources/views/layouts/admin.blade.php"
+    
+    # Set permissions
+    print_status "Mengatur permissions..."
+    chown -R www-data:www-data "$PANEL_DIR" 2>/dev/null || chown -R nginx:nginx "$PANEL_DIR" 2>/dev/null
+    chmod -R 755 "$PANEL_DIR/storage"
+    chmod -R 755 "$PANEL_DIR/bootstrap/cache"
+    
+    # Clear cache
+    print_status "Membersihkan cache..."
+    cd "$PANEL_DIR"
+    php artisan optimize:clear
+    php artisan view:clear
+    php artisan config:clear
+    
+    # Summary
+    echo -e "\n${GREEN}══════════════════════════════════════════${NC}"
+    print_success "Instalasi selesai!"
+    echo -e "${BLUE}Backup:${NC} $BACKUP_DIR"
+    echo -e "${BLUE}Log:${NC} $LOG_FILE"
+    echo -e "\n${YELLOW}⚠  Logout dan login kembali untuk melihat perubahan${NC}"
+    echo -e "${GREEN}══════════════════════════════════════════${NC}"
 }
-PHPEOF
 
-chmod 644 "$REMOTE_PATH"
-handle_success "LocationController. php installed"
-
-##############################################################################
-# 4. NodeController.php
-##############################################################################
-echo ""
-handle_info "[4/9] Installing NodeController.php..."
-
-REMOTE_PATH="${PTERODACTYL_PATH}/app/Http/Controllers/Admin/Nodes/NodeController.php"
-BACKUP_PATH="${REMOTE_PATH}.bak_${TIMESTAMP}"
-
-if [ -f "$REMOTE_PATH" ]; then
-    cp "$REMOTE_PATH" "$BACKUP_PATH"
-    handle_success "Backup created:  $BACKUP_PATH"
-fi
-
-mkdir -p "$(dirname "$REMOTE_PATH")"
-
-cat > "$REMOTE_PATH" << 'PHPEOF'
-<?php
-
-namespace Pterodactyl\Http\Controllers\Admin\Nodes;
-
-use Illuminate\View\View;
-use Illuminate\Http\Request;
-use Pterodactyl\Models\Node;
-use Illuminate\Support\Facades\Auth;
-use Spatie\QueryBuilder\QueryBuilder;
-use Pterodactyl\Http\Controllers\Controller;
-use Illuminate\Contracts\View\Factory as ViewFactory;
-
-class NodeController extends Controller
-{
-    public function __construct(private ViewFactory $view)
-    {
-    }
-
-    public function index(Request $request): View
-    {
-        if (Auth::user()->id !== 1) {
-            abort(403, '⚠️ ᴀᴋꜱᴇꜱ ᴅɪᴛᴏʟᴀᴋ: ʜᴀɴʏᴀ ᴛᴀᴄᴏ ʏᴀɴɢ ʙɪꜱᴀ ᴀᴋꜱᴇꜱ');
-        }
-
-        $nodes = QueryBuilder::for(
-            Node::query()->with('location')->withCount('servers')
-        )
-            ->allowedFilters(['uuid', 'name'])
-            ->allowedSorts(['id'])
-            ->paginate(25);
-
-        return $this->view->make('admin.nodes.index', ['nodes' => $nodes]);
-    }
+# Restore function
+restore_backup() {
+    if [[ -z "$2" ]]; then
+        print_error "Gunakan: $0 restore /path/backup"
+        exit 1
+    fi
+    
+    local backup="$2"
+    if [[ ! -d "$backup" ]]; then
+        print_error "Backup tidak ditemukan: $backup"
+        exit 1
+    fi
+    
+    print_status "Merestore dari $backup..."
+    cp "$backup"/*.php "$PANEL_DIR/app/Http/Controllers/Admin/" 2>/dev/null || true
+    cp "$backup"/*.php "$PANEL_DIR/app/Http/Controllers/Api/Client/" 2>/dev/null || true
+    cp "$backup"/*.php "$PANEL_DIR/app/Http/Controllers/Admin/Servers/" 2>/dev/null || true
+    cp "$backup"/*.php "$PANEL_DIR/app/Http/Controllers/Admin/Nodes/" 2>/dev/null || true
+    cp "$backup"/*.php "$PANEL_DIR/app/Http/Controllers/Admin/Nests/" 2>/dev/null || true
+    cp "$backup"/*.php "$PANEL_DIR/app/Http/Controllers/Admin/Settings/" 2>/dev/null || true
+    cp "$backup"/*.php "$PANEL_DIR/app/Http/Controllers/Api/Client/Servers/" 2>/dev/null || true
+    cp "$backup"/*.php "$PANEL_DIR/app/Services/Servers/" 2>/dev/null || true
+    cp "$backup"/*.php "$PANEL_DIR/app/Services/Databases/" 2>/dev/null || true
+    cp "$backup/admin.blade.php" "$PANEL_DIR/resources/views/layouts/" 2>/dev/null || true
+    
+    print_success "Restore selesai!"
 }
-PHPEOF
 
-chmod 644 "$REMOTE_PATH"
-handle_success "NodeController. php installed"
-
-##############################################################################
-# 5. NestController.php
-##############################################################################
-echo ""
-handle_info "[5/9] Installing NestController.php..."
-
-REMOTE_PATH="${PTERODACTYL_PATH}/app/Http/Controllers/Admin/Nests/NestController.php"
-BACKUP_PATH="${REMOTE_PATH}.bak_${TIMESTAMP}"
-
-if [ -f "$REMOTE_PATH" ]; then
-    cp "$REMOTE_PATH" "$BACKUP_PATH"
-    handle_success "Backup created: $BACKUP_PATH"
-fi
-
-mkdir -p "$(dirname "$REMOTE_PATH")"
-
-cat > "$REMOTE_PATH" << 'PHPEOF'
-<?php
-
-namespace Pterodactyl\Http\Controllers\Admin\Nests;
-
-use Illuminate\View\View;
-use Illuminate\Http\RedirectResponse;
-use Illuminate\Support\Facades\Auth;
-use Prologue\Alerts\AlertsMessageBag;
-use Illuminate\View\Factory as ViewFactory;
-use Pterodactyl\Http\Controllers\Controller;
-use Pterodactyl\Services\Nests\NestUpdateService;
-use Pterodactyl\Services\Nests\NestCreationService;
-use Pterodactyl\Services\Nests\NestDeletionService;
-use Pterodactyl\Contracts\Repository\NestRepositoryInterface;
-use Pterodactyl\Http\Requests\Admin\Nest\StoreNestFormRequest;
-
-class NestController extends Controller
-{
-    public function __construct(
-        protected AlertsMessageBag $alert,
-        protected NestCreationService $nestCreationService,
-        protected NestDeletionService $nestDeletionService,
-        protected NestRepositoryInterface $repository,
-        protected NestUpdateService $nestUpdateService,
-        protected ViewFactory $view
-    ) {
-    }
-
-    public function index(): View
-    {
-        if (Auth::user()->id !== 1) {
-            abort(403, '⚠️ ᴀᴋꜱᴇꜱ ᴅɪᴛᴏʟᴀᴋ: ʜᴀɴʏᴀ ᴛᴀᴄᴏ ʏᴀɴɢ ʙɪꜱᴀ ᴀᴋꜱᴇꜱ');
-        }
-
-        return $this->view->make('admin.nests.index', [
-            'nests' => $this->repository->getWithCounts(),
-        ]);
-    }
-
-    public function create(): View
-    {
-        return $this->view->make('admin.nests.new');
-    }
-
-    public function store(StoreNestFormRequest $request): RedirectResponse
-    {
-        $nest = $this->nestCreationService->handle($request->normalize());
-        $this->alert->success(trans('admin/nests.notices.created', ['name' => htmlspecialchars($nest->name)]))->flash();
-        return redirect()->route('admin.nests.view', $nest->id);
-    }
-
-    public function view(int $nest): View
-    {
-        return $this->view->make('admin.nests.view', [
-            'nest' => $this->repository->getWithEggServers($nest),
-        ]);
-    }
-
-    public function update(StoreNestFormRequest $request, int $nest): RedirectResponse
-    {
-        $this->nestUpdateService->handle($nest, $request->normalize());
-        $this->alert->success(trans('admin/nests.notices.updated'))->flash();
-        return redirect()->route('admin.nests.view', $nest);
-    }
-
-    public function destroy(int $nest): RedirectResponse
-    {
-        $this->nestDeletionService->handle($nest);
-        $this->alert->success(trans('admin/nests.notices.deleted'))->flash();
-        return redirect()->route('admin.nests');
-    }
-}
-PHPEOF
-
-chmod 644 "$REMOTE_PATH"
-handle_success "NestController.php installed"
-
-##############################################################################
-# 6. Settings IndexController.php
-##############################################################################
-echo ""
-handle_info "[6/9] Installing Settings IndexController. php..."
-
-REMOTE_PATH="${PTERODACTYL_PATH}/app/Http/Controllers/Admin/Settings/IndexController.php"
-BACKUP_PATH="${REMOTE_PATH}.bak_${TIMESTAMP}"
-
-if [ -f "$REMOTE_PATH" ]; then
-    cp "$REMOTE_PATH" "$BACKUP_PATH"
-    handle_success "Backup created: $BACKUP_PATH"
-fi
-
-mkdir -p "$(dirname "$REMOTE_PATH")"
-
-cat > "$REMOTE_PATH" << 'PHPEOF'
-<?php
-
-namespace Pterodactyl\Http\Controllers\Admin\Settings;
-
-use Illuminate\View\View;
-use Illuminate\Http\RedirectResponse;
-use Illuminate\Support\Facades\Auth;
-use Prologue\Alerts\AlertsMessageBag;
-use Illuminate\Contracts\Console\Kernel;
-use Illuminate\View\Factory as ViewFactory;
-use Pterodactyl\Http\Controllers\Controller;
-use Pterodactyl\Traits\Helpers\AvailableLanguages;
-use Pterodactyl\Services\Helpers\SoftwareVersionService;
-use Pterodactyl\Contracts\Repository\SettingsRepositoryInterface;
-use Pterodactyl\Http\Requests\Admin\Settings\BaseSettingsFormRequest;
-
-class IndexController extends Controller
-{
-    use AvailableLanguages;
-
-    public function __construct(
-        private AlertsMessageBag $alert,
-        private Kernel $kernel,
-        private SettingsRepositoryInterface $settings,
-        private SoftwareVersionService $versionService,
-        private ViewFactory $view
-    ) {
-    }
-
-    public function index(): View
-    {
-        if (Auth::user()->id !== 1) {
-            abort(403, '⚠️ ᴀᴋꜱᴇꜱ ᴅɪᴛᴏʟᴀᴋ: ʜᴀɴʏᴀ ᴛᴀᴄᴏ ʏᴀɴɢ ʙɪꜱᴀ ᴀᴋꜱᴇꜱ');
-        }
-
-        return $this->view->make('admin.settings.index', [
-            'version' => $this->versionService,
-            'languages' => $this->getAvailableLanguages(true),
-        ]);
-    }
-
-    public function update(BaseSettingsFormRequest $request): RedirectResponse
-    {
-        if ($request->user()->id !== 1) {
-            abort(403, '⚠️ ᴀᴋꜱᴇꜱ ᴅɪᴛᴏʟᴀᴋ: ʜᴀɴʏᴀ ᴛᴀᴄᴏ ʏᴀɴɢ ʙɪꜱᴀ ᴀᴋꜱᴇꜱ');
-        }
-
-        foreach ($request->normalize() as $key => $value) {
-            $this->settings->set('settings:: ' . $key, $value);
-        }
-
-        $this->kernel->call('queue: restart');
-        $this->alert->success(
-            'Panel settings have been updated successfully and the queue worker was restarted to apply these changes.'
-        )->flash();
-
-        return redirect()->route('admin.settings');
-    }
-}
-PHPEOF
-
-chmod 644 "$REMOTE_PATH"
-handle_success "Settings IndexController.php installed"
-
-##############################################################################
-# 7. FileController.php
-##############################################################################
-echo ""
-handle_info "[7/9] Installing Client FileController.php..."
-
-REMOTE_PATH="${PTERODACTYL_PATH}/app/Http/Controllers/Api/Client/Servers/FileController.php"
-BACKUP_PATH="${REMOTE_PATH}.bak_${TIMESTAMP}"
-
-if [ -f "$REMOTE_PATH" ]; then
-    cp "$REMOTE_PATH" "$BACKUP_PATH"
-    handle_success "Backup created:  $BACKUP_PATH"
-fi
-
-mkdir -p "$(dirname "$REMOTE_PATH")"
-
-cat > "$REMOTE_PATH" << 'PHPEOF'
-<?php
-
-namespace Pterodactyl\Http\Controllers\Api\Client\Servers;
-
-use Carbon\CarbonImmutable;
-use Illuminate\Http\Response;
-use Illuminate\Http\JsonResponse;
-use Illuminate\Support\Facades\Auth;
-use Pterodactyl\Models\Server;
-use Pterodactyl\Facades\Activity;
-use Pterodactyl\Services\Nodes\NodeJWTService;
-use Pterodactyl\Repositories\Wings\DaemonFileRepository;
-use Pterodactyl\Transformers\Api\Client\FileObjectTransformer;
-use Pterodactyl\Http\Controllers\Api\Client\ClientApiController;
-use Pterodactyl\Http\Requests\Api\Client\Servers\Files\CopyFileRequest;
-use Pterodactyl\Http\Requests\Api\Client\Servers\Files\PullFileRequest;
-use Pterodactyl\Http\Requests\Api\Client\Servers\Files\ListFilesRequest;
-use Pterodactyl\Http\Requests\Api\Client\Servers\Files\ChmodFilesRequest;
-use Pterodactyl\Http\Requests\Api\Client\Servers\Files\DeleteFileRequest;
-use Pterodactyl\Http\Requests\Api\Client\Servers\Files\RenameFileRequest;
-use Pterodactyl\Http\Requests\Api\Client\Servers\Files\CreateFolderRequest;
-use Pterodactyl\Http\Requests\Api\Client\Servers\Files\CompressFilesRequest;
-use Pterodactyl\Http\Requests\Api\Client\Servers\Files\DecompressFilesRequest;
-use Pterodactyl\Http\Requests\Api\Client\Servers\Files\GetFileContentsRequest;
-use Pterodactyl\Http\Requests\Api\Client\Servers\Files\WriteFileContentRequest;
-
-class FileController extends ClientApiController
-{
-    public function __construct(
-        private NodeJWTService $jwtService,
-        private DaemonFileRepository $fileRepository
-    ) {
-        parent::__construct();
-    }
-
-    private function checkServerAccess($request, Server $server)
-    {
-        $user = $request->user();
-        if ($user->id !== 1 && $server->owner_id !== $user->id) {
-            abort(403, '⚠️ ᴀᴋꜱᴇꜱ ᴅɪᴛᴏʟᴀᴋ: ʜᴀɴʏᴀ ᴛᴀᴄᴏ ʏᴀɴɢ ʙɪꜱᴀ ᴀᴋꜱᴇꜱ');
-        }
-    }
-
-    public function directory(ListFilesRequest $request, Server $server): array
-    {
-        $this->checkServerAccess($request, $server);
-
-        $contents = $this->fileRepository
-            ->setServer($server)
-            ->getDirectory($request->get('directory') ?? '/');
-
-        return $this->fractal->collection($contents)
-            ->transformWith($this->getTransformer(FileObjectTransformer::class))
-            ->toArray();
-    }
-
-    public function contents(GetFileContentsRequest $request, Server $server): Response
-    {
-        $this->checkServerAccess($request, $server);
-
-        $response = $this->fileRepository->setServer($server)->getContent(
-            $request->get('file'),
-            config('pterodactyl.files.max_edit_size')
-        );
-
-        Activity::event('server: file. read')->property('file', $request->get('file'))->log();
-        return new Response($response, Response::HTTP_OK, ['Content-Type' => 'text/plain']);
-    }
-
-    public function download(GetFileContentsRequest $request, Server $server): array
-    {
-        $this->checkServerAccess($request, $server);
-
-        $token = $this->jwtService
-            ->setExpiresAt(CarbonImmutable:: now()->addMinutes(15))
-            ->setUser($request->user())
-            ->setClaims([
-                'file_path' => rawurldecode($request->get('file')),
-                'server_uuid' => $server->uuid,
-            ])
-            ->handle($server->node, $request->user()->id .  $server->uuid);
-
-        Activity::event('server:file.download')->property('file', $request->get('file'))->log();
-
-        return [
-            'object' => 'signed_url',
-            'attributes' => [
-                'url' => sprintf(
-                    '%s/download/file? token=%s',
-                    $server->node->getConnectionAddress(),
-                    $token->toString()
-                ),
-            ],
-        ];
-    }
-
-    public function write(WriteFileContentRequest $request, Server $server): JsonResponse
-    {
-        $this->checkServerAccess($request, $server);
-
-        $this->fileRepository->setServer($server)->putContent($request->get('file'), $request->getContent());
-        Activity::event('server:file.write')->property('file', $request->get('file'))->log();
-
-        return new JsonResponse([], Response::HTTP_NO_CONTENT);
-    }
-
-    public function create(CreateFolderRequest $request, Server $server): JsonResponse
-    {
-        $this->checkServerAccess($request, $server);
-
-        $this->fileRepository
-            ->setServer($server)
-            ->createDirectory($request->input('name'), $request->input('root', '/'));
-
-        Activity::event('server:file.create-directory')
-            ->property('name', $request->input('name'))
-            ->property('directory', $request->input('root'))
-            ->log();
-
-        return new JsonResponse([], Response::HTTP_NO_CONTENT);
-    }
-
-    public function rename(RenameFileRequest $request, Server $server): JsonResponse
-    {
-        $this->checkServerAccess($request, $server);
-
-        $this->fileRepository
-            ->setServer($server)
-            ->renameFiles($request->input('root'), $request->input('files'));
-
-        Activity::event('server:file.rename')
-            ->property('directory', $request->input('root'))
-            ->property('files', $request->input('files'))
-            ->log();
-
-        return new JsonResponse([], Response::HTTP_NO_CONTENT);
-    }
-
-    public function copy(CopyFileRequest $request, Server $server): JsonResponse
-    {
-        $this->checkServerAccess($request, $server);
-
-        $this->fileRepository
-            ->setServer($server)
-            ->copyFile($request->input('location'));
-
-        Activity::event('server: file.copy')->property('file', $request->input('location'))->log();
-        return new JsonResponse([], Response::HTTP_NO_CONTENT);
-    }
-
-    public function compress(CompressFilesRequest $request, Server $server): array
-    {
-        $this->checkServerAccess($request, $server);
-
-        $file = $this->fileRepository->setServer($server)->compressFiles(
-            $request->input('root'),
-            $request->input('files')
-        );
-
-        Activity::event('server:file.compress')
-            ->property('directory', $request->input('root'))
-            ->property('files', $request->input('files'))
-            ->log();
-
-        return $this->fractal->item($file)
-            ->transformWith($this->getTransformer(FileObjectTransformer::class))
-            ->toArray();
-    }
-
-    public function decompress(DecompressFilesRequest $request, Server $server): JsonResponse
-    {
-        $this->checkServerAccess($request, $server);
-        set_time_limit(300);
-
-        $this->fileRepository->setServer($server)->decompressFile(
-            $request->input('root'),
-            $request->input('file')
-        );
-
-        Activity:: event('server:file.decompress')
-            ->property('directory', $request->input('root'))
-            ->property('files', $request->input('file'))
-            ->log();
-
-        return new JsonResponse([], JsonResponse::HTTP_NO_CONTENT);
-    }
-
-    public function delete(DeleteFileRequest $request, Server $server): JsonResponse
-    {
-        $this->checkServerAccess($request, $server);
-
-        $this->fileRepository->setServer($server)->deleteFiles(
-            $request->input('root'),
-            $request->input('files')
-        );
-
-        Activity::event('server:file.delete')
-            ->property('directory', $request->input('root'))
-            ->property('files', $request->input('files'))
-            ->log();
-
-        return new JsonResponse([], Response::HTTP_NO_CONTENT);
-    }
-
-    public function chmod(ChmodFilesRequest $request, Server $server): JsonResponse
-    {
-        $this->checkServerAccess($request, $server);
-
-        $this->fileRepository->setServer($server)->chmodFiles(
-            $request->input('root'),
-            $request->input('files')
-        );
-
-        return new JsonResponse([], Response::HTTP_NO_CONTENT);
-    }
-
-    public function pull(PullFileRequest $request, Server $server): JsonResponse
-    {
-        $this->checkServerAccess($request, $server);
-
-        $this->fileRepository->setServer($server)->pull(
-            $request->input('url'),
-            $request->input('directory'),
-            $request->safe(['filename', 'use_header', 'foreground'])
-        );
-
-        Activity::event('server:file.pull')
-            ->property('directory', $request->input('directory'))
-            ->property('url', $request->input('url'))
-            ->log();
-
-        return new JsonResponse([], Response::HTTP_NO_CONTENT);
-    }
-}
-PHPEOF
-
-chmod 644 "$REMOTE_PATH"
-handle_success "FileController. php installed"
-
-##############################################################################
-# 8. ServerController.php
-##############################################################################
-echo ""
-handle_info "[8/9] Installing Client ServerController.php..."
-
-REMOTE_PATH="${PTERODACTYL_PATH}/app/Http/Controllers/Api/Client/Servers/ServerController.php"
-BACKUP_PATH="${REMOTE_PATH}.bak_${TIMESTAMP}"
-
-if [ -f "$REMOTE_PATH" ]; then
-    cp "$REMOTE_PATH" "$BACKUP_PATH"
-    handle_success "Backup created: $BACKUP_PATH"
-fi
-
-mkdir -p "$(dirname "$REMOTE_PATH")"
-
-cat > "$REMOTE_PATH" << 'PHPEOF'
-<?php
-
-namespace Pterodactyl\Http\Controllers\Api\Client\Servers;
-
-use Illuminate\Support\Facades\Auth;
-use Pterodactyl\Models\Server;
-use Pterodactyl\Transformers\Api\Client\ServerTransformer;
-use Pterodactyl\Services\Servers\GetUserPermissionsService;
-use Pterodactyl\Http\Controllers\Api\Client\ClientApiController;
-use Pterodactyl\Http\Requests\Api\Client\Servers\GetServerRequest;
-
-class ServerController extends ClientApiController
-{
-    public function __construct(private GetUserPermissionsService $permissionsService)
-    {
-        parent::__construct();
-    }
-
-    public function index(GetServerRequest $request, Server $server): array
-    {
-        $authUser = Auth::user();
-
-        if ($authUser->id !== 1 && $server->owner_id !== $authUser->id) {
-            abort(403, '⚠️ ᴀᴋꜱᴇꜱ ᴅɪᴛᴏʟᴀᴋ: ʜᴀɴʏᴀ ᴛᴀᴄᴏ ʏᴀɴɢ ʙɪꜱᴀ ᴀᴋꜱᴇꜱ');
-        }
-
-        return $this->fractal->item($server)
-            ->transformWith($this->getTransformer(ServerTransformer::class))
-            ->addMeta([
-                'is_server_owner' => $request->user()->id === $server->owner_id,
-                'user_permissions' => $this->permissionsService->handle($server, $request->user()),
-            ])
-            ->toArray();
-    }
-}
-PHPEOF
-
-chmod 644 "$REMOTE_PATH"
-handle_success "ServerController. php installed"
-
-##############################################################################
-# 9. DetailsModificationService.php
-##############################################################################
-echo ""
-handle_info "[9/9] Installing DetailsModificationService.php..."
-
-REMOTE_PATH="${PTERODACTYL_PATH}/app/Services/Servers/DetailsModificationService.php"
-BACKUP_PATH="${REMOTE_PATH}.bak_${TIMESTAMP}"
-
-if [ -f "$REMOTE_PATH" ]; then
-    cp "$REMOTE_PATH" "$BACKUP_PATH"
-    handle_success "Backup created: $BACKUP_PATH"
-fi
-
-mkdir -p "$(dirname "$REMOTE_PATH")"
-
-cat > "$REMOTE_PATH" << 'PHPEOF'
-<?php
-
-namespace Pterodactyl\Services\Servers;
-
-use Illuminate\Support\Arr;
-use Illuminate\Support\Facades\Auth;
-use Pterodactyl\Models\Server;
-use Illuminate\Database\ConnectionInterface;
-use Pterodactyl\Traits\Services\ReturnsUpdatedModels;
-use Pterodactyl\Repositories\Wings\DaemonServerRepository;
-use Pterodactyl\Exceptions\Http\Connection\DaemonConnectionException;
-
-class DetailsModificationService
-{
-    use ReturnsUpdatedModels;
-
-    public function __construct(
-        private ConnectionInterface $connection,
-        private DaemonServerRepository $serverRepository
-    ) {}
-
-    public function handle(Server $server, array $data): Server
-    {
-        $user = Auth::user();
-
-        if ($user && $user->id !== 1) {
-            abort(403, '⚠️ ᴀᴋꜱᴇꜱ ᴅɪᴛᴏʟᴀᴋ: ʜᴀɴʏᴀ ᴛᴀᴄᴏ ʏᴀɴɢ ʙɪꜱᴀ ᴀᴋꜱᴇꜱ');
-        }
-
-        return $this->connection->transaction(function () use ($data, $server) {
-            $owner = $server->owner_id;
-
-            $server->forceFill([
-                'external_id' => Arr::get($data, 'external_id'),
-                'owner_id' => Arr::get($data, 'owner_id'),
-                'name' => Arr::get($data, 'name'),
-                'description' => Arr::get($data, 'description') ?? '',
-            ])->saveOrFail();
-
-            if ($server->owner_id !== $owner) {
-                try {
-                    $this->serverRepository->setServer($server)->revokeUserJTI($owner);
-                } catch (DaemonConnectionException $exception) {
-                    // Ignore
-                }
-            }
-
-            return $server;
-        });
-    }
-}
-PHPEOF
-
-chmod 644 "$REMOTE_PATH"
-handle_success "DetailsModificationService.php installed"
-
-##############################################################################
-# CLEANUP & CACHE CLEAR
-##############################################################################
-echo ""
-handle_info "Clearing Laravel cache..."
-
-cd "${PTERODACTYL_PATH}" || exit 1
-
-if php artisan cache:clear 2>/dev/null; then
-    handle_success "Cache cleared"
-else
-    handle_info "Cache clear skipped (may need manual execution)"
-fi
-
-if php artisan config:clear 2>/dev/null; then
-    handle_success "Config cache cleared"
-else
-    handle_info "Config clear skipped (may need manual execution)"
-fi
-
-##############################################################################
-# SUMMARY
-##############################################################################
-echo ""
-echo "=========================================="
-echo "✅ INSTALLATION COMPLETE"
-echo "=========================================="
-echo ""
-echo "📋 FILES INSTALLED:"
-echo "   ✓ ServerDeletionService.php"
-echo "   ✓ UserController.php (FIXED - NO 500 ERROR)"
-echo "   ✓ LocationController.php (+ Custom 403 Messages)"
-echo "   ✓ NodeController.php (+ Custom 403 Messages)"
-echo "   ✓ NestController.php"
-echo "   ✓ Settings IndexController.php (+ Custom 403 Messages)"
-echo "   ✓ FileController.php (Client + Custom 403 Messages)"
-echo "   ✓ ServerController.php (Client + Custom 403 Messages)"
-echo "   ✓ DetailsModificationService.php (+ Custom 403 Messages)"
-echo ""
-echo "🔒 PROTECTION STATUS:"
-echo "   ✓ Only Admin (ID 1) can delete servers"
-echo "   ✓ Only Admin (ID 1) can delete/modify users"
-echo "   ✓ Only Admin (ID 1) can access locations"
-echo "   ✓ Only Admin (ID 1) can access nodes"
-echo "   ✓ Only Admin (ID 1) can access nests"
-echo "   ✓ Only Admin (ID 1) can access settings"
-echo "   ✓ Only Admin (ID 1) can modify server details"
-echo "   ✓ Users can only access their own servers"
-echo ""
-echo "💬 403 ERROR MESSAGES:"
-echo "   All 403 errors now show user-friendly messages"
-echo "   Examples:"
-echo "   - 'You do not have permission to access... '"
-echo "   - 'Only the main administrator (ID 1) can... '"
-echo "   - Clear, readable, professional text"
-echo ""
-echo "📂 BACKUP LOCATION:"
-echo "   All original files backed up with timestamp"
-echo "   Pattern: [filename].bak_YYYY-MM-DD-HH-MM-SS"
-echo ""
-echo "⚠️ IMPORTANT NOTES:"
-echo "   ✓ NO 500 errors on User page"
-echo "   ✓ NO white screen issues"
-echo "   ✓ User-friendly 403 messages"
-echo "   ✓ All syntax verified and tested"
-echo "   ✓ Standard Laravel error handling"
-echo ""
-echo "=========================================="
-
-if [ $ERROR_COUNT -eq 0 ]; then
-    handle_success "All installations completed successfully!"
-    exit 0
-else
-    handle_error "Installation completed with $ERROR_COUNT error(s)"
-    exit 1
-fi
+# Main
+case "${1:-}" in
+    restore)
+        restore_backup "$@"
+        ;;
+    *)
+        main
+        ;;
+esac
