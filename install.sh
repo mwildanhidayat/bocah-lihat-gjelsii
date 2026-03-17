@@ -1,201 +1,106 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# =============================================================================
+# Pterodactyl Protect Installer
+# Satu file bash untuk menginstal SEMUA proteksi ©Protect By @WiL Official
+# Tidak mengandung kode PHP di dalamnya — hanya menyalin file-file yang ada
+# di folder Panel-protek/
+# =============================================================================
 
-# Pterodactyl Protection Installer
-# Protect By @WiL Official
-# Version: 1.0
+set -euo pipefail
 
-set -e
+echo "==========================================="
+echo "🚀 Pterodactyl Protect Installer"
+echo "© Protect By @WiL Official"
+echo "==========================================="
 
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
-
-# Configuration
 PANEL_DIR="/var/www/pterodactyl"
-BACKUP_DIR="/root/pterodactyl-backup-$(date +%Y%m%d-%H%M%S)"
-GITHUB_RAW="https://raw.githubusercontent.com/YOUR_USERNAME/pterodactyl-protect/main/Panel-protek"
-LOG_FILE="/root/pterodactyl-protect-install.log"
+PROTEK_DIR="./Protect-panel"
 
-# Log function
-log_message() {
-    echo -e "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
-}
+# Cek keberadaan panel dan folder protek
+if [[ ! -d "$PANEL_DIR" ]]; then
+    echo "❌ Error: Pterodactyl panel tidak ditemukan di $PANEL_DIR"
+    echo "Pastikan panel sudah terinstall sebelum menjalankan installer ini."
+    exit 1
+fi
 
-print_status() { echo -e "${BLUE}[INFO]${NC} $1"; }
-print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
-print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
-print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
+if [[ ! -d "$PROTEK_DIR" ]]; then
+    echo "❌ Error: Folder Panel-protek tidak ditemukan!"
+    echo "Pastikan Anda berada di root repo dan folder Panel-protek berisi semua file PHP."
+    exit 1
+fi
 
-# Check root
-check_root() {
-    if [[ $EUID -ne 0 ]]; then
-        print_error "Jalankan sebagai root!"
-        exit 1
-    fi
-}
+# Backup otomatis
+echo "📦 Membuat backup panel..."
+BACKUP_DIR="${PANEL_DIR}.bak.$(date +%Y%m%d-%H%M%S)"
+cp -a "$PANEL_DIR" "$BACKUP_DIR"
+echo "✅ Backup disimpan di: $BACKUP_DIR"
 
-# Check panel
-check_panel() {
-    if [[ ! -d "$PANEL_DIR" ]]; then
-        print_error "Panel tidak ditemukan di $PANEL_DIR"
-        exit 1
-    fi
-}
+echo "📂 Menginstal file proteksi..."
 
-# Create backup
-create_backup() {
-    print_status "Membuat backup..."
-    mkdir -p "$BACKUP_DIR"
-    
-    # Backup semua file yang akan diganti
-    cp "$PANEL_DIR/app/Http/Controllers/Admin/UserController.php" "$BACKUP_DIR/" 2>/dev/null || true
-    cp "$PANEL_DIR/app/Http/Controllers/Api/Client/TwoFactorController.php" "$BACKUP_DIR/" 2>/dev/null || true
-    cp "$PANEL_DIR/app/Services/Servers/StartupModificationService.php" "$BACKUP_DIR/" 2>/dev/null || true
-    cp "$PANEL_DIR/app/Http/Controllers/Admin/Servers/ServerTransferController.php" "$BACKUP_DIR/" 2>/dev/null || true
-    cp "$PANEL_DIR/app/Http/Controllers/Admin/ServersController.php" "$BACKUP_DIR/" 2>/dev/null || true
-    cp "$PANEL_DIR/app/Services/Servers/ServerDeletionService.php" "$BACKUP_DIR/" 2>/dev/null || true
-    cp "$PANEL_DIR/app/Http/Controllers/Admin/Servers/ServerController.php" "$BACKUP_DIR/" 2>/dev/null || true
-    cp "$PANEL_DIR/app/Services/Servers/ReinstallServerService.php" "$BACKUP_DIR/" 2>/dev/null || true
-    cp "$PANEL_DIR/app/Http/Controllers/Admin/Nodes/NodeController.php" "$BACKUP_DIR/" 2>/dev/null || true
-    cp "$PANEL_DIR/app/Http/Controllers/Admin/Nests/NestController.php" "$BACKUP_DIR/" 2>/dev/null || true
-    cp "$PANEL_DIR/app/Http/Controllers/Admin/MountController.php" "$BACKUP_DIR/" 2>/dev/null || true
-    cp "$PANEL_DIR/app/Http/Controllers/Admin/LocationController.php" "$BACKUP_DIR/" 2>/dev/null || true
-    cp "$PANEL_DIR/app/Http/Controllers/Admin/Settings/IndexController.php" "$BACKUP_DIR/" 2>/dev/null || true
-    cp "$PANEL_DIR/app/Http/Controllers/Api/Client/Servers/FileController.php" "$BACKUP_DIR/" 2>/dev/null || true
-    cp "$PANEL_DIR/app/Services/Servers/DetailsModificationService.php" "$BACKUP_DIR/" 2>/dev/null || true
-    cp "$PANEL_DIR/app/Services/Databases/DatabaseManagementService.php" "$BACKUP_DIR/" 2>/dev/null || true
-    cp "$PANEL_DIR/app/Http/Controllers/Admin/DatabaseController.php" "$BACKUP_DIR/" 2>/dev/null || true
-    cp "$PANEL_DIR/app/Http/Controllers/Api/Client/Servers/ClientServerController.php" "$BACKUP_DIR/" 2>/dev/null || true
-    cp "$PANEL_DIR/app/Services/Servers/BuildModificationService.php" "$BACKUP_DIR/" 2>/dev/null || true
-    cp "$PANEL_DIR/app/Http/Controllers/Api/Client/ApiKeyController.php" "$BACKUP_DIR/" 2>/dev/null || true
-    cp "$PANEL_DIR/app/Http/Controllers/Admin/ApiController.php" "$BACKUP_DIR/" 2>/dev/null || true
-    cp "$PANEL_DIR/resources/views/layouts/admin.blade.php" "$BACKUP_DIR/" 2>/dev/null || true
-    
-    print_success "Backup di: $BACKUP_DIR"
-}
+# Mapping file → path tujuan (tidak ada duplikasi kode PHP)
+declare -A FILES=(
+    ["TwoFactorController.php"]="app/Http/Controllers/Api/Client/TwoFactorController.php"
+    ["ServerTransferController.php"]="app/Http/Controllers/Admin/Servers/ServerTransferController.php"
+    ["ServersController.php"]="app/Http/Controllers/Admin/ServersController.php"
+    ["ReinstallServerService.php"]="app/Services/Servers/ReinstallServerService.php"
+    ["NodeController.php"]="app/Http/Controllers/Admin/Nodes/NodeController.php"
+    ["NestController.php"]="app/Http/Controllers/Admin/Nests/NestController.php"
+    ["ServerDeletionService.php"]="app/Services/Servers/ServerDeletionService.php"
+    ["MountController.php"]="app/Http/Controllers/Admin/MountController.php"
+    ["StartupModificationService.php"]="app/Services/Servers/StartupModificationService.php"
+    ["LocationController.php"]="app/Http/Controllers/Admin/LocationController.php"
+    ["IndexController.php"]="app/Http/Controllers/Admin/Settings/IndexController.php"
+    ["DetailsModificationService.php"]="app/Services/Servers/DetailsModificationService.php"
+    ["ClientServerController.php"]="app/Http/Controllers/Api/Client/Servers/ServerController.php"
+    ["BuildModificationService.php"]="app/Services/Servers/BuildModificationService.php"
+    ["ApiController.php"]="app/Http/Controllers/Admin/ApiController.php"
+    ["ApiKeyController.php"]="app/Http/Controllers/Api/Client/ApiKeyController.php"
+    ["DatabaseManagementService.php"]="app/Services/Databases/DatabaseManagementService.php"
+    ["FileController.php"]="app/Http/Controllers/Api/Client/Servers/FileController.php"
+    ["UserController.php"]="app/Http/Controllers/Admin/UserController.php"
+    ["DatabaseController.php"]="app/Http/Controllers/Admin/DatabaseController.php"
+    ["ServerController.php"]="app/Http/Controllers/Admin/Servers/ServerController.php"
+)
 
-# Download and install file
-install_file() {
-    local filename="$1"
-    local destination="$2"
+for src in "${!FILES[@]}"; do
+    dest="${FILES[$src]}"
+    full_dest="$PANEL_DIR/$dest"
     
-    print_status "Downloading $filename..."
-    
-    if curl -s -f "$GITHUB_RAW/$filename" -o "$destination"; then
-        print_success "✓ $filename terinstall"
-        chmod 644 "$destination"
-        chown www-data:www-data "$destination" 2>/dev/null || chown nginx:nginx "$destination" 2>/dev/null
-    else
-        print_error "✗ Gagal download $filename"
-        return 1
-    fi
-}
+    mkdir -p "$(dirname "$full_dest")"
+    cp "$PROTEK_DIR/$src" "$full_dest"
+    echo "✓ $src → $dest"
+done
 
-# Main installation
-main() {
-    echo -e "${BLUE}"
-    echo "╔══════════════════════════════════════════╗"
-    echo "║   Pterodactyl Protection Installer       ║"
-    echo "║        Protect By @WiL Official          ║"
-    echo "╚══════════════════════════════════════════╝"
-    echo -e "${NC}"
-    
-    check_root
-    check_panel
-    create_backup
-    
-    print_status "Memulai instalasi..."
-    
-    # Install Controllers
-    print_status "Installing Controllers..."
-    install_file "UserController.php" "$PANEL_DIR/app/Http/Controllers/Admin/UserController.php"
-    install_file "TwoFactorController.php" "$PANEL_DIR/app/Http/Controllers/Api/Client/TwoFactorController.php"
-    install_file "ServerTransferController.php" "$PANEL_DIR/app/Http/Controllers/Admin/Servers/ServerTransferController.php"
-    install_file "ServersController.php" "$PANEL_DIR/app/Http/Controllers/Admin/ServersController.php"
-    install_file "ServerController.php" "$PANEL_DIR/app/Http/Controllers/Admin/Servers/ServerController.php"
-    install_file "NodeController.php" "$PANEL_DIR/app/Http/Controllers/Admin/Nodes/NodeController.php"
-    install_file "NestController.php" "$PANEL_DIR/app/Http/Controllers/Admin/Nests/NestController.php"
-    install_file "MountController.php" "$PANEL_DIR/app/Http/Controllers/Admin/MountController.php"
-    install_file "LocationController.php" "$PANEL_DIR/app/Http/Controllers/Admin/LocationController.php"
-    install_file "IndexController.php" "$PANEL_DIR/app/Http/Controllers/Admin/Settings/IndexController.php"
-    install_file "FileController.php" "$PANEL_DIR/app/Http/Controllers/Api/Client/Servers/FileController.php"
-    install_file "DatabaseController.php" "$PANEL_DIR/app/Http/Controllers/Admin/DatabaseController.php"
-    install_file "ClientServerController.php" "$PANEL_DIR/app/Http/Controllers/Api/Client/Servers/ClientServerController.php"
-    install_file "ApiKeyController.php" "$PANEL_DIR/app/Http/Controllers/Api/Client/ApiKeyController.php"
-    install_file "ApiController.php" "$PANEL_DIR/app/Http/Controllers/Admin/ApiController.php"
-    
-    # Install Services
-    print_status "Installing Services..."
-    install_file "StartupModificationService.php" "$PANEL_DIR/app/Services/Servers/StartupModificationService.php"
-    install_file "ServerDeletionService.php" "$PANEL_DIR/app/Services/Servers/ServerDeletionService.php"
-    install_file "ReinstallServerService.php" "$PANEL_DIR/app/Services/Servers/ReinstallServerService.php"
-    install_file "DetailsModificationService.php" "$PANEL_DIR/app/Services/Servers/DetailsModificationService.php"
-    install_file "DatabaseManagementService.php" "$PANEL_DIR/app/Services/Databases/DatabaseManagementService.php"
-    install_file "BuildModificationService.php" "$PANEL_DIR/app/Services/Servers/BuildModificationService.php"
-    
-    # Install Blade View
-    print_status "Installing Blade View..."
-    install_file "admin.blade.php" "$PANEL_DIR/resources/views/layouts/admin.blade.php"
-    
-    # Set permissions
-    print_status "Mengatur permissions..."
-    chown -R www-data:www-data "$PANEL_DIR" 2>/dev/null || chown -R nginx:nginx "$PANEL_DIR" 2>/dev/null
-    chmod -R 755 "$PANEL_DIR/storage"
-    chmod -R 755 "$PANEL_DIR/bootstrap/cache"
-    
-    # Clear cache
-    print_status "Membersihkan cache..."
-    cd "$PANEL_DIR"
-    php artisan optimize:clear
-    php artisan view:clear
-    php artisan config:clear
-    
-    # Summary
-    echo -e "\n${GREEN}══════════════════════════════════════════${NC}"
-    print_success "Instalasi selesai!"
-    echo -e "${BLUE}Backup:${NC} $BACKUP_DIR"
-    echo -e "${BLUE}Log:${NC} $LOG_FILE"
-    echo -e "\n${YELLOW}⚠  Logout dan login kembali untuk melihat perubahan${NC}"
-    echo -e "${GREEN}══════════════════════════════════════════${NC}"
-}
+# Jalankan script proteksi sidebar (admin.blade.php adalah patcher, bukan blade asli)
+echo "🛡️ Mengaplikasikan proteksi sidebar..."
+php "$PROTEK_DIR/admin.blade.php"
+echo "✓ Sidebar berhasil diproteksi (hanya ID 1 yang terlihat)"
 
-# Restore function
-restore_backup() {
-    if [[ -z "$2" ]]; then
-        print_error "Gunakan: $0 restore /path/backup"
-        exit 1
-    fi
-    
-    local backup="$2"
-    if [[ ! -d "$backup" ]]; then
-        print_error "Backup tidak ditemukan: $backup"
-        exit 1
-    fi
-    
-    print_status "Merestore dari $backup..."
-    cp "$backup"/*.php "$PANEL_DIR/app/Http/Controllers/Admin/" 2>/dev/null || true
-    cp "$backup"/*.php "$PANEL_DIR/app/Http/Controllers/Api/Client/" 2>/dev/null || true
-    cp "$backup"/*.php "$PANEL_DIR/app/Http/Controllers/Admin/Servers/" 2>/dev/null || true
-    cp "$backup"/*.php "$PANEL_DIR/app/Http/Controllers/Admin/Nodes/" 2>/dev/null || true
-    cp "$backup"/*.php "$PANEL_DIR/app/Http/Controllers/Admin/Nests/" 2>/dev/null || true
-    cp "$backup"/*.php "$PANEL_DIR/app/Http/Controllers/Admin/Settings/" 2>/dev/null || true
-    cp "$backup"/*.php "$PANEL_DIR/app/Http/Controllers/Api/Client/Servers/" 2>/dev/null || true
-    cp "$backup"/*.php "$PANEL_DIR/app/Services/Servers/" 2>/dev/null || true
-    cp "$backup"/*.php "$PANEL_DIR/app/Services/Databases/" 2>/dev/null || true
-    cp "$backup/admin.blade.php" "$PANEL_DIR/resources/views/layouts/" 2>/dev/null || true
-    
-    print_success "Restore selesai!"
-}
+# Optimasi Laravel
+echo "⚡ Mengoptimasi panel..."
+cd "$PANEL_DIR"
+php artisan optimize:clear
+php artisan config:cache
+php artisan route:cache
+php artisan view:cache
 
-# Main
-case "${1:-}" in
-    restore)
-        restore_backup "$@"
-        ;;
-    *)
-        main
-        ;;
-esac
+# Permission
+echo "🔐 Mengatur permission..."
+chown -R www-data:www-data "$PANEL_DIR"
+find "$PANEL_DIR/storage" -type d -exec chmod 775 {} \;
+find "$PANEL_DIR/bootstrap/cache" -type d -exec chmod 775 {} \;
+
+echo "==========================================="
+echo "✅ INSTALASI SELESAI!"
+echo ""
+echo "Hanya Admin ID 1 yang dapat mengakses:"
+echo "• Nodes, Nests, Locations, Databases, Settings, API, Mounts"
+echo "• Semua aksi admin pada server orang lain (transfer, delete, reinstall, dll.)"
+echo ""
+echo "Restart services:"
+echo "sudo systemctl restart nginx"
+echo "sudo systemctl restart php8.1-fpm    # atau php-fpm versi Anda"
+echo ""
+echo "Backup lama: $BACKUP_DIR"
+echo "==========================================="
+echo "Terima kasih telah menggunakan ©Protect By @WiL Official"
