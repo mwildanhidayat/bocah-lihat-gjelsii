@@ -1,37 +1,16 @@
-# Pterodactyl-Protect
+# 1. Buat direktori kerja baru (biar rapi)
+mkdir -p /opt/pterodactyl-protect
+cd /opt/pterodactyl-protect
 
+# 2. Clone repo kamu (pastikan branch main benar)
+git clone https://github.com/mwildanhidayat/bocah-lihat-gjelsii.git .
 
+# 3. Masuk ke folder repo
+# Pastikan kamu masih di /opt/pterodactyl-protect
+pwd   # harus output: /opt/pterodactyl-protect
 
+# Cek isi (seharusnya sudah ada Protect-panel dan install.sh)
+ls -la
 
-## Command Install :
-
-```bash
-curl -s https://raw.githubusercontent.com/mwildanhidayat/bocah-lihat-gjelsii/refs/heads/main/install.sh | sed 's/\r$//' | bash
-```
-
-## Command Uninstall :
-
-```bash
-curl -s https://raw.githubusercontent.com/mwildanhidayat/bocah-lihat-gjelsii/refs/heads/main/uninstall.sh | sed 's/\r$//' | bash
-```
-
-## Fitur Tools :
-
-- Install Protect Panel
-- Uninstall Protect Panel
-
-## System Support :
-
-| Operating System | Version | Supported          |
-| ---------------- | ------- | ------------------ |
-| Ubuntu           | 20.04   | :white_check_mark: |
-|                  | 22.04   | :white_check_mark: |
-| Debian           | 10      | :white_check_mark: |
-|                  | 11      | :white_check_mark: |
-|                  | 12      | :white_check_mark: |
-
-_\* di atas adalah os yang saya test, selebihnya bisa di test sendiri._
-
-
-## Credits 
-- Github: [ @tacofury ](https://github.com/mwildanhidayat)
+# Jalankan installer langsung dari sini
+bash install.sh
