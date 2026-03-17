@@ -24,8 +24,8 @@ if [[ ! -d "$PANEL_DIR" ]]; then
 fi
 
 if [[ ! -d "$PROTEK_DIR" ]]; then
-    echo "❌ Error: Folder Panel-protek tidak ditemukan!"
-    echo "Pastikan Anda berada di root repo dan folder Panel-protek berisi semua file PHP."
+    echo "❌ Error: Folder tidak ditemukan!"
+    echo "Pastikan Anda berada di root repo dan folder berisi semua file PHP."
     exit 1
 fi
 
