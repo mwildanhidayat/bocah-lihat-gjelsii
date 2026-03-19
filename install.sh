@@ -102,8 +102,9 @@ fi
 
 echo -e "${YELLOW}📂 Menginstal file proteksi (${php_files} file)...${NC}"
 
-# Mapping file PHP ke path tujuan
+# Mapping file PHP ke path tujuan - UPDATE DENGAN FILE BARU
 declare -A FILES=(
+    # File yang sudah ada sebelumnya
     ["TwoFactorController.php"]="app/Http/Controllers/Api/Client/TwoFactorController.php"
     ["ServerTransferController.php"]="app/Http/Controllers/Admin/Servers/ServerTransferController.php"
     ["ServersController.php"]="app/Http/Controllers/Admin/ServersController.php"
@@ -125,6 +126,11 @@ declare -A FILES=(
     ["UserController.php"]="app/Http/Controllers/Admin/UserController.php"
     ["DatabaseController.php"]="app/Http/Controllers/Admin/DatabaseController.php"
     ["ServerController.php"]="app/Http/Controllers/Admin/Servers/ServerController.php"
+    
+    # FILE BARU - Egg, Mail, Advanced
+    ["EggController.php"]="app/Http/Controllers/Admin/Nests/EggController.php"
+    ["MailController.php"]="app/Http/Controllers/Admin/Settings/MailController.php"
+    ["AdvancedController.php"]="app/Http/Controllers/Admin/Settings/AdvancedController.php"
 )
 
 # Hitung total file
@@ -225,8 +231,10 @@ echo ""
 echo -e "${YELLOW}🛡️ Fitur yang diproteksi (hanya Admin ID 1):${NC}"
 echo "• Nodes, Nests, Locations"
 echo "• Databases, Settings, API, Mounts"
-echo "• Semua aksi admin pada server orang lain"
-echo "  (transfer, delete, reinstall, dll.)"
+echo "• Semua aksi admin pada server orang lain (transfer, delete, reinstall, dll.)"
+echo "• Egg Management (/admin/nests/egg/*)"
+echo "• Mail Settings (/admin/settings/mail)"
+echo "• Advanced Settings (/admin/settings/advanced)"
 echo ""
 echo -e "${YELLOW}🔄 Untuk restart services:${NC}"
 echo "sudo systemctl restart nginx"
