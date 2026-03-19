@@ -207,6 +207,20 @@ else
     echo -e "${RED}⚠ Gagal mengatur permission${NC}"
 fi
 
+# Fix API View - Filter API Key per user
+echo -e "${YELLOW}🔧 Memperbaiki tampilan API Key...${NC}"
+if [[ -f "$PANEL_DIR/fix_api_view.php" ]]; then
+    cd "$PANEL_DIR"
+    if php fix_api_view.php; then
+        echo -e "${GREEN}✅ API View berhasil diperbaiki${NC}"
+    else
+        echo -e "${RED}⚠ Gagal memperbaiki API View${NC}"
+    fi
+    rm -f "$PANEL_DIR/fix_api_view.php"
+else
+    echo -e "${YELLOW}⚠ File fix_api_view.php tidak ditemukan${NC}"
+fi
+
 # Deteksi versi PHP
 PHP_VERSION=$(php -r "echo PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION;")
 PHP_FPM="php$PHP_VERSION-fpm"
